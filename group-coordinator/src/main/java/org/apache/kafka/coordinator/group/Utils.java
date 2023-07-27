@@ -14,33 +14,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.kafka.coordinator.group;
 
-package org.apache.kafka.image.loader;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 
-import org.apache.kafka.image.MetadataProvenance;
-
-
-/**
- * An interface for the metadata loader metrics.
- */
-public interface MetadataLoaderMetrics extends AutoCloseable {
-    /**
-     * Update the batch processing time histogram.
-     */
-    void updateBatchProcessingTime(long elapsedNs);
+public class Utils {
+    private Utils() {}
 
     /**
-     * Update the batch size histogram.
+     * @return An OptionalInt containing the value iff the value is different from
+     * the sentinel (or default) value -1.
      */
-    void updateBatchSize(int size);
+    public static OptionalInt ofSentinel(int value) {
+        return value != -1 ? OptionalInt.of(value) : OptionalInt.empty();
+    }
 
     /**
-     * Set the provenance of the last image which has been processed by all publishers.
+     * @return An OptionalLong containing the value iff the value is different from
+     * the sentinel (or default) value -1.
      */
-    void updateLastAppliedImageProvenance(MetadataProvenance provenance);
-
-    /**
-     * Retrieve the last offset which has been processed by all publishers.
-     */
-    long lastAppliedOffset();
+    public static OptionalLong ofSentinel(long value) {
+        return value != -1 ? OptionalLong.of(value) : OptionalLong.empty();
+    }
 }
