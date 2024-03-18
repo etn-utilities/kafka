@@ -28,7 +28,7 @@ import java.{time, util}
 import kafka.integration.KafkaServerTestHarness
 import kafka.security.authorizer.AclEntry
 import kafka.server.metadata.KRaftMetadataCache
-import kafka.server.{Defaults, DynamicConfig, KafkaConfig}
+import kafka.server.{DynamicConfig, KafkaConfig}
 import kafka.utils.TestUtils._
 import kafka.utils.{Log4jController, TestInfoUtils, TestUtils}
 import org.apache.kafka.clients.HostResolver
@@ -44,7 +44,8 @@ import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceT
 import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.{ConsumerGroupState, ElectionType, TopicCollection, TopicPartition, TopicPartitionInfo, TopicPartitionReplica, Uuid}
 import org.apache.kafka.controller.ControllerRequestContextUtil.ANONYMOUS_CONTEXT
-import org.apache.kafka.storage.internals.log.LogConfig
+import org.apache.kafka.server.config.Defaults
+import org.apache.kafka.storage.internals.log.{CleanerConfig, LogConfig}
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, BeforeEach, Disabled, TestInfo}
 import org.junit.jupiter.params.ParameterizedTest
@@ -104,7 +105,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     var nodeStrs: List[String] = null
     do {
       val nodes = client.describeCluster().nodes().get().asScala
-      nodeStrs = nodes.map ( node => s"${node.host}:${node.port}" ).toList.sorted
+      nodeStrs = nodes.map(node => s"${node.host}:${node.port}").toList.sorted
     } while (nodeStrs.size < brokerStrs.size)
     assertEquals(brokerStrs.mkString(","), nodeStrs.mkString(","))
   }
@@ -197,7 +198,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
 
     val results = client.describeTopics(TopicCollection.ofTopicIds(Seq(existingTopicId, nonExistingTopicId).asJava)).topicIdValues()
     assertEquals(existingTopicId, results.get(existingTopicId).get.topicId())
-    assertThrows(classOf[ExecutionException], () => results.get(nonExistingTopicId).get).getCause.isInstanceOf[UnknownTopicIdException]
+    assertFutureExceptionTypeEquals(results.get(nonExistingTopicId), classOf[UnknownTopicIdException])
   }
 
   @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumName)
@@ -446,7 +447,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       configs.get(brokerResource2).entries.size)
     assertEquals(brokers(2).config.brokerId.toString, configs.get(brokerResource2).get(KafkaConfig.BrokerIdProp).value)
     assertEquals(brokers(2).config.logCleanerThreads.toString,
-      configs.get(brokerResource2).get(KafkaConfig.LogCleanerThreadsProp).value)
+      configs.get(brokerResource2).get(CleanerConfig.LOG_CLEANER_THREADS_PROP).value)
 
     checkValidAlterConfigs(client, this, topicResource1, topicResource2)
   }
@@ -476,26 +477,26 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       getTopicMetadata(client, topic, expectedNumPartitionsOpt = expectedNumPartitionsOpt).partitions
     }
 
-    def numPartitions(topic: String, expectedNumPartitionsOpt: Option[Int] = None): Int = partitions(topic, expectedNumPartitionsOpt).size
+    def numPartitions(topic: String, expectedNumPartitionsOpt: Option[Int]): Int = partitions(topic, expectedNumPartitionsOpt).size
 
     // validateOnly: try creating a new partition (no assignments), to bring the total to 3 partitions
     var alterResult = client.createPartitions(Map(topic1 ->
       NewPartitions.increaseTo(3)).asJava, validateOnly)
     var altered = alterResult.values.get(topic1).get
-    assertEquals(1, numPartitions(topic1))
+    TestUtils.waitForAllPartitionsMetadata(brokers, topic1, expectedNumPartitions = 1)
 
     // try creating a new partition (no assignments), to bring the total to 3 partitions
     alterResult = client.createPartitions(Map(topic1 ->
       NewPartitions.increaseTo(3)).asJava, actuallyDoIt)
     altered = alterResult.values.get(topic1).get
-    TestUtils.waitUntilTrue(() => numPartitions(topic1) == 3, "Timed out waiting for new partitions to appear")
+    TestUtils.waitForAllPartitionsMetadata(brokers, topic1, expectedNumPartitions = 3)
 
     // validateOnly: now try creating a new partition (with assignments), to bring the total to 3 partitions
     val newPartition2Assignments = asList[util.List[Integer]](asList(0, 1), asList(1, 2))
     alterResult = client.createPartitions(Map(topic2 ->
       NewPartitions.increaseTo(3, newPartition2Assignments)).asJava, validateOnly)
     altered = alterResult.values.get(topic2).get
-    assertEquals(1, numPartitions(topic2))
+    TestUtils.waitForAllPartitionsMetadata(brokers, topic2, expectedNumPartitions = 1)
 
     // now try creating a new partition (with assignments), to bring the total to 3 partitions
     alterResult = client.createPartitions(Map(topic2 ->
@@ -523,7 +524,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         "Topic currently has 3 partitions, which is higher than the requested 1."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try a newCount which would be a noop (without assignment)
       alterResult = client.createPartitions(Map(topic2 ->
@@ -537,7 +538,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         "Topic already has 3 partitions."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic2, Some(3)), desc)
+      assertEquals(3, numPartitions(topic2, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try a newCount which would be a noop (where the assignment matches current state)
       alterResult = client.createPartitions(Map(topic2 ->
@@ -545,7 +546,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       e = assertThrows(classOf[ExecutionException], () => alterResult.values.get(topic2).get)
       assertTrue(e.getCause.isInstanceOf[InvalidPartitionsException], desc)
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic2, Some(3)), desc)
+      assertEquals(3, numPartitions(topic2, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try a newCount which would be a noop (where the assignment doesn't match current state)
       alterResult = client.createPartitions(Map(topic2 ->
@@ -553,7 +554,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       e = assertThrows(classOf[ExecutionException], () => alterResult.values.get(topic2).get)
       assertTrue(e.getCause.isInstanceOf[InvalidPartitionsException], desc)
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic2, Some(3)), desc)
+      assertEquals(3, numPartitions(topic2, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try a bad topic name
       val unknownTopic = "an-unknown-topic"
@@ -582,7 +583,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage,
         desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try assignments where the number of brokers != replication factor
       alterResult = client.createPartitions(Map(topic1 ->
@@ -598,7 +599,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
           "have replication factors [2], respectively."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try #assignments < with the increase
       alterResult = client.createPartitions(Map(topic1 ->
@@ -612,7 +613,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         "Increasing the number of partitions by 3 but 1 assignments provided."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try #assignments > with the increase
       alterResult = client.createPartitions(Map(topic1 ->
@@ -626,7 +627,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       }
       assertTrue(e.getCause.isInstanceOf[InvalidReplicaAssignmentException], desc)
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try with duplicate brokers in assignments
       alterResult = client.createPartitions(Map(topic1 ->
@@ -640,7 +641,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         "Duplicate brokers not allowed in replica assignment: 1, 1 for partition id 3."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try assignments with differently sized inner lists
       alterResult = client.createPartitions(Map(topic1 ->
@@ -656,7 +657,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
           "while partitions [4] have replication factors [2], respectively."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try assignments with unknown brokers
       alterResult = client.createPartitions(Map(topic1 ->
@@ -670,7 +671,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         "Unknown broker(s) in replica assignment: 12."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
 
       // try with empty assignments
       alterResult = client.createPartitions(Map(topic1 ->
@@ -684,7 +685,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         "Increasing the number of partitions by 1 but 0 assignments provided."
       }
       assertEquals(exceptionMsgStr, e.getCause.getMessage, desc)
-      assertEquals(3, numPartitions(topic1), desc)
+      assertEquals(3, numPartitions(topic1, expectedNumPartitionsOpt = Some(3)), desc)
     }
 
     // a mixed success, failure response
@@ -693,7 +694,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       topic2 -> NewPartitions.increaseTo(2)).asJava, actuallyDoIt)
     // assert that the topic1 now has 4 partitions
     altered = alterResult.values.get(topic1).get
-    TestUtils.waitUntilTrue(() => numPartitions(topic1) == 4, "Timed out waiting for new partitions to appear")
+    TestUtils.waitForAllPartitionsMetadata(brokers, topic1, expectedNumPartitions = 4)
     var e = assertThrows(classOf[ExecutionException], () => alterResult.values.get(topic2).get)
     assertTrue(e.getCause.isInstanceOf[InvalidPartitionsException])
     val exceptionMsgStr = if (isKRaftTest()) {
@@ -702,7 +703,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       "Topic currently has 3 partitions, which is higher than the requested 2."
     }
     assertEquals(exceptionMsgStr, e.getCause.getMessage)
-    assertEquals(3, numPartitions(topic2))
+    TestUtils.waitForAllPartitionsMetadata(brokers, topic2, expectedNumPartitions = 3)
 
     // Delete the topic. Verify addition of partitions to deleted topic is not possible. In
     // Zookeeper mode, the topic is queued for deletion. In KRaft, the deletion occurs
@@ -1026,7 +1027,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
 
   /**
     * Test closing the AdminClient with a generous timeout.  Calls in progress should be completed,
-    * since they can be done within the timeout.  New calls should receive timeouts.
+    * since they can be done within the timeout.  New calls should receive exceptions.
     */
   @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumName)
   @ValueSource(strings = Array("zk", "kraft"))
@@ -1037,7 +1038,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     val future = client.createTopics(newTopics.asJava, new CreateTopicsOptions().validateOnly(true)).all()
     client.close(time.Duration.ofHours(2))
     val future2 = client.createTopics(newTopics.asJava, new CreateTopicsOptions().validateOnly(true)).all()
-    assertFutureExceptionTypeEquals(future2, classOf[TimeoutException])
+    assertFutureExceptionTypeEquals(future2, classOf[IllegalStateException])
     future.get
     client.close(time.Duration.ofMinutes(30)) // multiple close-with-timeout should have no effect
   }
@@ -1352,7 +1353,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       newConsumerConfig.setProperty(ConsumerConfig.CLIENT_ID_CONFIG, testClientId)
       // Increase timeouts to avoid having a rebalance during the test
       newConsumerConfig.setProperty(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, Integer.MAX_VALUE.toString)
-      newConsumerConfig.setProperty(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Defaults.GroupMaxSessionTimeoutMs.toString)
+      newConsumerConfig.setProperty(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Defaults.GROUP_MAX_SESSION_TIMEOUT_MS.toString)
       val consumer = createConsumer(configOverrides = newConsumerConfig)
 
       try {
@@ -2531,7 +2532,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       .all().get(15, TimeUnit.SECONDS)
 
     val newLogCleanerDeleteRetention = new Properties
-    newLogCleanerDeleteRetention.put(KafkaConfig.LogCleanerDeleteRetentionMsProp, "34")
+    newLogCleanerDeleteRetention.put(CleanerConfig.LOG_CLEANER_DELETE_RETENTION_MS_PROP, "34")
     TestUtils.incrementalAlterConfigs(brokers, client, newLogCleanerDeleteRetention, perBrokerConfig = true)
       .all().get(15, TimeUnit.SECONDS)
 
@@ -2542,14 +2543,14 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
         controllerServer.config.nodeId.toString)
       controllerServer.controller.incrementalAlterConfigs(ANONYMOUS_CONTEXT,
         Collections.singletonMap(controllerNodeResource,
-          Collections.singletonMap(KafkaConfig.LogCleanerDeleteRetentionMsProp,
+          Collections.singletonMap(CleanerConfig.LOG_CLEANER_DELETE_RETENTION_MS_PROP,
             new SimpleImmutableEntry(AlterConfigOp.OpType.SET, "34"))), false).get()
       ensureConsistentKRaftMetadata()
     }
 
     waitUntilTrue(() => brokers.forall(_.config.originals.getOrDefault(
-      KafkaConfig.LogCleanerDeleteRetentionMsProp, "").toString.equals("34")),
-      s"Timed out waiting for change to ${KafkaConfig.LogCleanerDeleteRetentionMsProp}",
+      CleanerConfig.LOG_CLEANER_DELETE_RETENTION_MS_PROP, "").toString.equals("34")),
+      s"Timed out waiting for change to ${CleanerConfig.LOG_CLEANER_DELETE_RETENTION_MS_PROP}",
       waitTimeMs = 60000L)
 
     waitUntilTrue(() => brokers.forall(_.config.originals.getOrDefault(
@@ -2692,11 +2693,11 @@ object PlaintextAdminIntegrationTest {
     // Create topics
     val topic1 = "invalid-alter-configs-topic-1"
     val topicResource1 = new ConfigResource(ConfigResource.Type.TOPIC, topic1)
-    createTopicWithAdmin(admin, topic1, test.brokers, numPartitions = 1, replicationFactor = 1)
+    createTopicWithAdmin(admin, topic1, test.brokers, test.controllerServers, numPartitions = 1, replicationFactor = 1)
 
     val topic2 = "invalid-alter-configs-topic-2"
     val topicResource2 = new ConfigResource(ConfigResource.Type.TOPIC, topic2)
-    createTopicWithAdmin(admin, topic2, test.brokers, numPartitions = 1, replicationFactor = 1)
+    createTopicWithAdmin(admin, topic2, test.brokers, test.controllerServers, numPartitions = 1, replicationFactor = 1)
 
     val topicConfigEntries1 = Seq(
       new ConfigEntry(TopicConfig.MIN_CLEANABLE_DIRTY_RATIO_CONFIG, "1.1"), // this value is invalid as it's above 1.0

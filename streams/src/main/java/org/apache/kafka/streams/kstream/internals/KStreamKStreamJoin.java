@@ -18,6 +18,7 @@ package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.streams.KeyValue;
+import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.kstream.ValueJoinerWithKey;
 import org.apache.kafka.streams.kstream.internals.KStreamImplJoin.TimeTracker;
 import org.apache.kafka.streams.kstream.internals.KStreamImplJoin.TimeTrackerSupplier;
@@ -32,9 +33,8 @@ import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.streams.state.WindowStoreIterator;
-import org.apache.kafka.streams.state.internals.TimestampedKeyAndJoinSide;
 import org.apache.kafka.streams.state.internals.LeftOrRightValue;
-import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.state.internals.TimestampedKeyAndJoinSide;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +51,8 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
     private final long joinAfterMs;
     private final long joinGraceMs;
     private final boolean enableSpuriousResultFix;
-    private final long joinSpuriousLookBackTimeMs;
+    private final long windowsBeforeMs;
+    private final long windowsAfterMs;
 
     private final boolean outer;
     private final boolean isLeftSide;
@@ -72,12 +73,12 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
         if (isLeftSide) {
             this.joinBeforeMs = windows.beforeMs;
             this.joinAfterMs = windows.afterMs;
-            this.joinSpuriousLookBackTimeMs = windows.beforeMs;
         } else {
             this.joinBeforeMs = windows.afterMs;
             this.joinAfterMs = windows.beforeMs;
-            this.joinSpuriousLookBackTimeMs = windows.afterMs;
         }
+        this.windowsAfterMs = windows.afterMs;
+        this.windowsBeforeMs = windows.beforeMs;
         this.joinGraceMs = windows.gracePeriodMs();
         this.enableSpuriousResultFix = windows.spuriousResultFixEnabled();
         this.joiner = joiner;
@@ -124,21 +125,24 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
         @SuppressWarnings("unchecked")
         @Override
         public void process(final Record<K, V1> record) {
-            if (StreamStreamJoinUtil.skipRecord(record, LOG, droppedRecordsSensor, context())) {
-                return;
-            }
-            boolean needOuterJoin = outer;
-
             final long inputRecordTimestamp = record.timestamp();
             final long timeFrom = Math.max(0L, inputRecordTimestamp - joinBeforeMs);
             final long timeTo = Math.max(0L, inputRecordTimestamp + joinAfterMs);
-
             sharedTimeTracker.advanceStreamTime(inputRecordTimestamp);
+
+            if (outer && record.key() == null && record.value() != null) {
+                context().forward(record.withValue(joiner.apply(record.key(), record.value(), null)));
+                return;
+            } else if (StreamStreamJoinUtil.skipRecord(record, LOG, droppedRecordsSensor, context())) {
+                return;
+            }
 
             // Emit all non-joined records which window has closed
             if (inputRecordTimestamp == sharedTimeTracker.streamTime) {
                 outerJoinStore.ifPresent(store -> emitNonJoinedOuterRecords(store, record));
             }
+
+            boolean needOuterJoin = outer;
             try (final WindowStoreIterator<V2> iter = otherWindowStore.fetch(record.key(), timeFrom, timeTo)) {
                 while (iter.hasNext()) {
                     needOuterJoin = false;
@@ -198,7 +202,7 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
             // to reduce runtime cost, we try to avoid paying those cost
 
             // only try to emit left/outer join results if there _might_ be any result records
-            if (sharedTimeTracker.minTime >= sharedTimeTracker.streamTime - joinSpuriousLookBackTimeMs - joinGraceMs) {
+            if (sharedTimeTracker.minTime + joinAfterMs + joinGraceMs >= sharedTimeTracker.streamTime) {
                 return;
             }
             // throttle the emit frequency to a (configurable) interval;
@@ -220,6 +224,8 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
                 TimestampedKeyAndJoinSide<K> prevKey = null;
 
                 while (it.hasNext()) {
+                    boolean outerJoinLeftBreak = false;
+                    boolean outerJoinRightBreak = false;
                     final KeyValue<TimestampedKeyAndJoinSide<K>, LeftOrRightValue<V1, V2>> next = it.next();
                     final TimestampedKeyAndJoinSide<K> timestampedKeyAndJoinSide = next.key;
                     final LeftOrRightValue<V1, V2> value = next.value;
@@ -228,8 +234,19 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
                     sharedTimeTracker.minTime = timestamp;
 
                     // Skip next records if window has not closed
-                    if (timestamp + joinAfterMs + joinGraceMs >= sharedTimeTracker.streamTime) {
-                        break;
+                    final long outerJoinLookBackTimeMs = getOuterJoinLookBackTimeMs(timestampedKeyAndJoinSide);
+                    if (sharedTimeTracker.minTime + outerJoinLookBackTimeMs + joinGraceMs >= sharedTimeTracker.streamTime) {
+                        if (timestampedKeyAndJoinSide.isLeftSide()) {
+                            outerJoinLeftBreak = true; // there are no more candidates to emit on left-outerJoin-side
+                        } else {
+                            outerJoinRightBreak = true; // there are no more candidates to emit on right-outerJoin-side
+                        }
+                        if (outerJoinLeftBreak && outerJoinRightBreak) {
+                            break; // there are no more candidates to emit on left-outerJoin-side and
+                                    // right-outerJoin-side
+                        } else {
+                            continue; // there are possibly candidates left on the other outerJoin-side
+                        }
                     }
 
                     final VOut nullJoinedValue;
@@ -263,6 +280,15 @@ class KStreamKStreamJoin<K, V1, V2, VOut> implements ProcessorSupplier<K, V1, K,
                 if (prevKey != null) {
                     store.put(prevKey, null);
                 }
+            }
+        }
+
+        private long getOuterJoinLookBackTimeMs(final TimestampedKeyAndJoinSide<K> timestampedKeyAndJoinSide) {
+            // depending on the JoinSide we fill in the outerJoinLookBackTimeMs
+            if (timestampedKeyAndJoinSide.isLeftSide()) {
+                return windowsAfterMs; // On the left-JoinSide we look back in time
+            } else {
+                return windowsBeforeMs; // On the right-JoinSide we look forward in time
             }
         }
 

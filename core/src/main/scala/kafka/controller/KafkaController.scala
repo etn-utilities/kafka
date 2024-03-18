@@ -16,7 +16,7 @@
  */
 package kafka.controller
 
-import com.yammer.metrics.core.Timer
+import com.yammer.metrics.core.{Meter, Timer}
 
 import java.util.concurrent.TimeUnit
 import kafka.api._
@@ -57,9 +57,9 @@ import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
 sealed trait ElectionTrigger
-final case object AutoTriggered extends ElectionTrigger
-final case object ZkTriggered extends ElectionTrigger
-final case object AdminClientTriggered extends ElectionTrigger
+case object AutoTriggered extends ElectionTrigger
+case object ZkTriggered extends ElectionTrigger
+case object AdminClientTriggered extends ElectionTrigger
 
 object KafkaController extends Logging {
   val InitialControllerEpoch = 0
@@ -175,7 +175,7 @@ class KafkaController(val config: KafkaConfig,
   /* single-thread scheduler to clean expired tokens */
   private val tokenCleanScheduler = new KafkaScheduler(1, true, "delegation-token-cleaner")
 
-  metricsGroup.newGauge(ZkMigrationStateMetricName, () => ZkMigrationState.ZK)
+  metricsGroup.newGauge(ZkMigrationStateMetricName, () => ZkMigrationState.ZK.value().intValue())
   metricsGroup.newGauge(ActiveControllerCountMetricName, () => if (isActive) 1 else 0)
   metricsGroup.newGauge(OfflinePartitionsCountMetricName, () => offlinePartitionCount)
   metricsGroup.newGauge(PreferredReplicaImbalanceCountMetricName, () => preferredReplicaImbalanceCount)
@@ -204,7 +204,7 @@ class KafkaController(val config: KafkaConfig,
    * is the controller. It merely registers the session expiration listener and starts the controller leader
    * elector
    */
-  def startup() = {
+  def startup(): Unit = {
     zkClient.registerStateChangeHandler(new StateChangeHandler {
       override val name: String = StateChangeHandlers.ControllerHandler
       override def afterInitializingSession(): Unit = {
@@ -2540,7 +2540,7 @@ class KafkaController(val config: KafkaConfig,
       allocateProducerIdsRequest.brokerEpoch, eventManagerCallback))
   }
 
-  def processAllocateProducerIds(brokerId: Int, brokerEpoch: Long, callback: Either[Errors, ProducerIdsBlock] => Unit): Unit = {
+  private def processAllocateProducerIds(brokerId: Int, brokerEpoch: Long, callback: Either[Errors, ProducerIdsBlock] => Unit): Unit = {
     // Handle a few short-circuits
     if (!isActive) {
       callback.apply(Left(Errors.NOT_CONTROLLER))
@@ -2779,7 +2779,7 @@ case class LeaderIsrAndControllerEpoch(leaderAndIsr: LeaderAndIsr, controllerEpo
 private[controller] class ControllerStats {
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
 
-  val uncleanLeaderElectionRate = metricsGroup.newMeter("UncleanLeaderElectionsPerSec", "elections", TimeUnit.SECONDS)
+  val uncleanLeaderElectionRate: Meter = metricsGroup.newMeter("UncleanLeaderElectionsPerSec", "elections", TimeUnit.SECONDS)
 
   val rateAndTimeMetrics: Map[ControllerState, Timer] = ControllerState.values.flatMap { state =>
     state.rateAndTimeMetricName.map { metricName =>

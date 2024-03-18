@@ -20,112 +20,106 @@ import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor;
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.errors.CoordinatorNotAvailableException;
+import org.apache.kafka.common.errors.FencedInstanceIdException;
 import org.apache.kafka.common.errors.FencedMemberEpochException;
 import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.apache.kafka.common.errors.GroupMaxSizeReachedException;
+import org.apache.kafka.common.errors.IllegalGenerationException;
 import org.apache.kafka.common.errors.InvalidRequestException;
+import org.apache.kafka.common.errors.NotLeaderOrFollowerException;
 import org.apache.kafka.common.errors.UnknownMemberIdException;
 import org.apache.kafka.common.errors.UnknownServerException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.UnsupportedAssignorException;
+import org.apache.kafka.common.message.ConsumerGroupDescribeResponseData;
+import org.apache.kafka.common.errors.UnreleasedInstanceIdException;
 import org.apache.kafka.common.message.ConsumerGroupHeartbeatRequestData;
 import org.apache.kafka.common.message.ConsumerGroupHeartbeatResponseData;
+import org.apache.kafka.common.message.DescribeGroupsResponseData;
+import org.apache.kafka.common.message.HeartbeatRequestData;
+import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.message.JoinGroupRequestData;
 import org.apache.kafka.common.message.JoinGroupResponseData;
 import org.apache.kafka.common.message.JoinGroupResponseData.JoinGroupResponseMember;
+import org.apache.kafka.common.message.LeaveGroupRequestData;
+import org.apache.kafka.common.message.LeaveGroupRequestData.MemberIdentity;
+import org.apache.kafka.common.message.LeaveGroupResponseData;
+import org.apache.kafka.common.message.ListGroupsResponseData;
 import org.apache.kafka.common.message.SyncGroupRequestData;
 import org.apache.kafka.common.message.SyncGroupRequestData.SyncGroupRequestAssignment;
 import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.metadata.PartitionRecord;
 import org.apache.kafka.common.metadata.RemoveTopicRecord;
 import org.apache.kafka.common.metadata.TopicRecord;
-import org.apache.kafka.common.network.ClientInformation;
-import org.apache.kafka.common.network.ListenerName;
-import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ApiMessage;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.requests.RequestContext;
-import org.apache.kafka.common.requests.RequestHeader;
-import org.apache.kafka.common.security.auth.KafkaPrincipal;
-import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.utils.LogContext;
-import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.coordinator.group.MockCoordinatorTimer.ExpiredTimeout;
 import org.apache.kafka.coordinator.group.MockCoordinatorTimer.ScheduledTimeout;
-import org.apache.kafka.coordinator.group.assignor.AssignmentSpec;
 import org.apache.kafka.coordinator.group.assignor.GroupAssignment;
 import org.apache.kafka.coordinator.group.assignor.MemberAssignment;
 import org.apache.kafka.coordinator.group.assignor.PartitionAssignor;
 import org.apache.kafka.coordinator.group.assignor.PartitionAssignorException;
+import org.apache.kafka.coordinator.group.classic.ClassicGroupState;
 import org.apache.kafka.coordinator.group.consumer.Assignment;
 import org.apache.kafka.coordinator.group.consumer.ConsumerGroup;
+import org.apache.kafka.coordinator.group.consumer.ConsumerGroupBuilder;
 import org.apache.kafka.coordinator.group.consumer.ConsumerGroupMember;
+import org.apache.kafka.coordinator.group.consumer.MemberState;
 import org.apache.kafka.coordinator.group.consumer.TopicMetadata;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupCurrentMemberAssignmentKey;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupCurrentMemberAssignmentValue;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupMemberMetadataKey;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupMemberMetadataValue;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupMetadataKey;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupMetadataValue;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupPartitionMetadataKey;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupPartitionMetadataValue;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupTargetAssignmentMemberKey;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupTargetAssignmentMemberValue;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupTargetAssignmentMetadataKey;
-import org.apache.kafka.coordinator.group.generated.ConsumerGroupTargetAssignmentMetadataValue;
-import org.apache.kafka.coordinator.group.generated.GroupMetadataKey;
 import org.apache.kafka.coordinator.group.generated.GroupMetadataValue;
-import org.apache.kafka.coordinator.group.generic.GenericGroup;
-import org.apache.kafka.coordinator.group.generic.GenericGroupMember;
-import org.apache.kafka.coordinator.group.generic.GenericGroupState;
+import org.apache.kafka.coordinator.group.classic.ClassicGroup;
+import org.apache.kafka.coordinator.group.classic.ClassicGroupMember;
+import org.apache.kafka.coordinator.group.metrics.GroupCoordinatorMetricsShard;
 import org.apache.kafka.coordinator.group.runtime.CoordinatorResult;
 import org.apache.kafka.image.MetadataDelta;
 import org.apache.kafka.image.MetadataImage;
 import org.apache.kafka.image.MetadataProvenance;
-import org.apache.kafka.image.TopicImage;
-import org.apache.kafka.image.TopicsImage;
-import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.common.MetadataVersion;
-import org.apache.kafka.timeline.SnapshotRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.opentest4j.AssertionFailedError;
 
-import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
+import static org.apache.kafka.common.requests.ConsumerGroupHeartbeatRequest.LEAVE_GROUP_STATIC_MEMBER_EPOCH;
 import static org.apache.kafka.common.utils.Utils.mkSet;
 import static org.apache.kafka.common.message.JoinGroupRequestData.JoinGroupRequestProtocol;
 import static org.apache.kafka.common.message.JoinGroupRequestData.JoinGroupRequestProtocolCollection;
+import static org.apache.kafka.common.requests.ConsumerGroupHeartbeatRequest.LEAVE_GROUP_MEMBER_EPOCH;
 import static org.apache.kafka.common.requests.JoinGroupRequest.UNKNOWN_MEMBER_ID;
+import static org.apache.kafka.coordinator.group.Assertions.assertRecordEquals;
+import static org.apache.kafka.coordinator.group.Assertions.assertRecordsEquals;
+import static org.apache.kafka.coordinator.group.Assertions.assertResponseEquals;
+import static org.apache.kafka.coordinator.group.Assertions.assertUnorderedListEquals;
 import static org.apache.kafka.coordinator.group.AssignmentTestUtil.mkAssignment;
 import static org.apache.kafka.coordinator.group.AssignmentTestUtil.mkTopicAssignment;
 import static org.apache.kafka.coordinator.group.GroupMetadataManager.appendGroupMetadataErrorToResponseError;
-import static org.apache.kafka.coordinator.group.GroupMetadataManager.consumerGroupRevocationTimeoutKey;
+import static org.apache.kafka.coordinator.group.GroupMetadataManager.consumerGroupRebalanceTimeoutKey;
 import static org.apache.kafka.coordinator.group.GroupMetadataManager.consumerGroupSessionTimeoutKey;
 import static org.apache.kafka.coordinator.group.GroupMetadataManager.EMPTY_RESULT;
-import static org.apache.kafka.coordinator.group.GroupMetadataManager.genericGroupHeartbeatKey;
-import static org.apache.kafka.coordinator.group.generic.GenericGroupState.COMPLETING_REBALANCE;
-import static org.apache.kafka.coordinator.group.generic.GenericGroupState.DEAD;
-import static org.apache.kafka.coordinator.group.generic.GenericGroupState.EMPTY;
-import static org.apache.kafka.coordinator.group.generic.GenericGroupState.PREPARING_REBALANCE;
-import static org.apache.kafka.coordinator.group.generic.GenericGroupState.STABLE;
-import static org.junit.jupiter.api.AssertionFailureBuilder.assertionFailure;
+import static org.apache.kafka.coordinator.group.GroupMetadataManager.classicGroupHeartbeatKey;
+import static org.apache.kafka.coordinator.group.GroupMetadataManager.classicGroupSyncKey;
+import static org.apache.kafka.coordinator.group.RecordHelpersTest.mkMapOfPartitionRacks;
+import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.COMPLETING_REBALANCE;
+import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.DEAD;
+import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.EMPTY;
+import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.PREPARING_REBALANCE;
+import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.STABLE;
+import static org.apache.kafka.coordinator.group.metrics.GroupCoordinatorMetrics.CLASSIC_GROUP_COMPLETED_REBALANCES_SENSOR_NAME;
+import static org.apache.kafka.coordinator.group.metrics.GroupCoordinatorMetrics.CONSUMER_GROUP_REBALANCES_SENSOR_NAME;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -136,892 +130,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class GroupMetadataManagerTest {
-    static class MockPartitionAssignor implements PartitionAssignor {
-        private final String name;
-        private GroupAssignment prepareGroupAssignment = null;
-
-        MockPartitionAssignor(String name) {
-            this.name = name;
-        }
-
-        public void prepareGroupAssignment(GroupAssignment prepareGroupAssignment) {
-            this.prepareGroupAssignment = prepareGroupAssignment;
-        }
-
-        @Override
-        public String name() {
-            return name;
-        }
-
-        @Override
-        public GroupAssignment assign(AssignmentSpec assignmentSpec) throws PartitionAssignorException {
-            return prepareGroupAssignment;
-        }
-    }
-
-    public static class MetadataImageBuilder {
-        private MetadataDelta delta = new MetadataDelta(MetadataImage.EMPTY);
-
-        public MetadataImageBuilder addTopic(
-            Uuid topicId,
-            String topicName,
-            int numPartitions
-        ) {
-            delta.replay(new TopicRecord().setTopicId(topicId).setName(topicName));
-            for (int i = 0; i < numPartitions; i++) {
-                delta.replay(new PartitionRecord()
-                    .setTopicId(topicId)
-                    .setPartitionId(i));
-            }
-            return this;
-        }
-
-        public MetadataImage build() {
-            return delta.apply(MetadataProvenance.EMPTY);
-        }
-    }
-
-    static class ConsumerGroupBuilder {
-        private final String groupId;
-        private final int groupEpoch;
-        private int assignmentEpoch;
-        private final Map<String, ConsumerGroupMember> members = new HashMap<>();
-        private final Map<String, Assignment> assignments = new HashMap<>();
-        private Map<String, TopicMetadata> subscriptionMetadata;
-
-        public ConsumerGroupBuilder(String groupId, int groupEpoch) {
-            this.groupId = groupId;
-            this.groupEpoch = groupEpoch;
-            this.assignmentEpoch = 0;
-        }
-
-        public ConsumerGroupBuilder withMember(ConsumerGroupMember member) {
-            this.members.put(member.memberId(), member);
-            return this;
-        }
-
-        public ConsumerGroupBuilder withSubscriptionMetadata(Map<String, TopicMetadata> subscriptionMetadata) {
-            this.subscriptionMetadata = subscriptionMetadata;
-            return this;
-        }
-
-        public ConsumerGroupBuilder withAssignment(String memberId, Map<Uuid, Set<Integer>> assignment) {
-            this.assignments.put(memberId, new Assignment(assignment));
-            return this;
-        }
-
-        public ConsumerGroupBuilder withAssignmentEpoch(int assignmentEpoch) {
-            this.assignmentEpoch = assignmentEpoch;
-            return this;
-        }
-
-        public List<Record> build(TopicsImage topicsImage) {
-            List<Record> records = new ArrayList<>();
-
-            // Add subscription records for members.
-            members.forEach((memberId, member) -> {
-                records.add(RecordHelpers.newMemberSubscriptionRecord(groupId, member));
-            });
-
-            // Add subscription metadata.
-            if (subscriptionMetadata == null) {
-                subscriptionMetadata = new HashMap<>();
-                members.forEach((memberId, member) -> {
-                    member.subscribedTopicNames().forEach(topicName -> {
-                        TopicImage topicImage = topicsImage.getTopic(topicName);
-                        if (topicImage != null) {
-                            subscriptionMetadata.put(topicName, new TopicMetadata(
-                                topicImage.id(),
-                                topicImage.name(),
-                                topicImage.partitions().size()
-                            ));
-                        }
-                    });
-                });
-            }
-
-            if (!subscriptionMetadata.isEmpty()) {
-                records.add(RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, subscriptionMetadata));
-            }
-
-            // Add group epoch record.
-            records.add(RecordHelpers.newGroupEpochRecord(groupId, groupEpoch));
-
-            // Add target assignment records.
-            assignments.forEach((memberId, assignment) -> {
-                records.add(RecordHelpers.newTargetAssignmentRecord(groupId, memberId, assignment.partitions()));
-            });
-
-            // Add target assignment epoch.
-            records.add(RecordHelpers.newTargetAssignmentEpochRecord(groupId, assignmentEpoch));
-
-            // Add current assignment records for members.
-            members.forEach((memberId, member) -> {
-                records.add(RecordHelpers.newCurrentAssignmentRecord(groupId, member));
-            });
-
-            return records;
-        }
-    }
-
-    static class GroupMetadataManagerTestContext {
-        static class Builder {
-            final private MockTime time = new MockTime();
-            final private MockCoordinatorTimer<Void, Record> timer = new MockCoordinatorTimer<>(time);
-            final private LogContext logContext = new LogContext();
-            final private SnapshotRegistry snapshotRegistry = new SnapshotRegistry(logContext);
-            final private TopicPartition groupMetadataTopicPartition = new TopicPartition("topic", 0);
-            private MetadataImage metadataImage;
-            private List<PartitionAssignor> assignors = Collections.singletonList(new MockPartitionAssignor("range"));
-            private List<ConsumerGroupBuilder> consumerGroupBuilders = new ArrayList<>();
-            private int consumerGroupMaxSize = Integer.MAX_VALUE;
-            private int consumerGroupMetadataRefreshIntervalMs = Integer.MAX_VALUE;
-            private int genericGroupMaxSize = Integer.MAX_VALUE;
-            private int genericGroupInitialRebalanceDelayMs = 3000;
-            final private int genericGroupNewMemberJoinTimeoutMs = 5 * 60 * 1000;
-            private int genericGroupMinSessionTimeoutMs = 10;
-            private int genericGroupMaxSessionTimeoutMs = 10 * 60 * 1000;
-
-            public Builder withMetadataImage(MetadataImage metadataImage) {
-                this.metadataImage = metadataImage;
-                return this;
-            }
-
-            public Builder withAssignors(List<PartitionAssignor> assignors) {
-                this.assignors = assignors;
-                return this;
-            }
-
-            public Builder withConsumerGroup(ConsumerGroupBuilder builder) {
-                this.consumerGroupBuilders.add(builder);
-                return this;
-            }
-
-            public Builder withConsumerGroupMaxSize(int consumerGroupMaxSize) {
-                this.consumerGroupMaxSize = consumerGroupMaxSize;
-                return this;
-            }
-
-            public Builder withConsumerGroupMetadataRefreshIntervalMs(int consumerGroupMetadataRefreshIntervalMs) {
-                this.consumerGroupMetadataRefreshIntervalMs = consumerGroupMetadataRefreshIntervalMs;
-                return this;
-            }
-
-            public Builder withGenericGroupMaxSize(int genericGroupMaxSize) {
-                this.genericGroupMaxSize = genericGroupMaxSize;
-                return this;
-            }
-
-            public Builder withGenericGroupInitialRebalanceDelayMs(int genericGroupInitialRebalanceDelayMs) {
-                this.genericGroupInitialRebalanceDelayMs = genericGroupInitialRebalanceDelayMs;
-                return this;
-            }
-
-            public Builder withGenericGroupMinSessionTimeoutMs(int genericGroupMinSessionTimeoutMs) {
-                this.genericGroupMinSessionTimeoutMs = genericGroupMinSessionTimeoutMs;
-                return this;
-            }
-
-            public Builder withGenericGroupMaxSessionTimeoutMs(int genericGroupMaxSessionTimeoutMs) {
-                this.genericGroupMaxSessionTimeoutMs = genericGroupMaxSessionTimeoutMs;
-                return this;
-            }
-
-            public GroupMetadataManagerTestContext build() {
-                if (metadataImage == null) metadataImage = MetadataImage.EMPTY;
-                if (assignors == null) assignors = Collections.emptyList();
-
-                GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext(
-                    time,
-                    timer,
-                    snapshotRegistry,
-                    new GroupMetadataManager.Builder()
-                        .withTopicPartition(groupMetadataTopicPartition)
-                        .withSnapshotRegistry(snapshotRegistry)
-                        .withLogContext(logContext)
-                        .withTime(time)
-                        .withTimer(timer)
-                        .withMetadataImage(metadataImage)
-                        .withConsumerGroupHeartbeatInterval(5000)
-                        .withConsumerGroupSessionTimeout(45000)
-                        .withConsumerGroupMaxSize(consumerGroupMaxSize)
-                        .withAssignors(assignors)
-                        .withConsumerGroupMetadataRefreshIntervalMs(consumerGroupMetadataRefreshIntervalMs)
-                        .withGenericGroupMaxSize(genericGroupMaxSize)
-                        .withGenericGroupMinSessionTimeoutMs(genericGroupMinSessionTimeoutMs)
-                        .withGenericGroupMaxSessionTimeoutMs(genericGroupMaxSessionTimeoutMs)
-                        .withGenericGroupInitialRebalanceDelayMs(genericGroupInitialRebalanceDelayMs)
-                        .withGenericGroupNewMemberJoinTimeoutMs(genericGroupNewMemberJoinTimeoutMs)
-                        .build(),
-                    genericGroupInitialRebalanceDelayMs,
-                    genericGroupNewMemberJoinTimeoutMs
-                );
-
-                consumerGroupBuilders.forEach(builder -> {
-                    builder.build(metadataImage.topics()).forEach(context::replay);
-                });
-
-                context.commit();
-
-                return context;
-            }
-        }
-
-        final MockTime time;
-        final MockCoordinatorTimer<Void, Record> timer;
-        final SnapshotRegistry snapshotRegistry;
-        final GroupMetadataManager groupMetadataManager;
-        final int genericGroupInitialRebalanceDelayMs;
-        final int genericGroupNewMemberJoinTimeoutMs;
-
-        long lastCommittedOffset = 0L;
-        long lastWrittenOffset = 0L;
-
-        public GroupMetadataManagerTestContext(
-            MockTime time,
-            MockCoordinatorTimer<Void, Record> timer,
-            SnapshotRegistry snapshotRegistry,
-            GroupMetadataManager groupMetadataManager,
-            int genericGroupInitialRebalanceDelayMs,
-            int genericGroupNewMemberJoinTimeoutMs
-        ) {
-            this.time = time;
-            this.timer = timer;
-            this.snapshotRegistry = snapshotRegistry;
-            this.groupMetadataManager = groupMetadataManager;
-            this.genericGroupInitialRebalanceDelayMs = genericGroupInitialRebalanceDelayMs;
-            this.genericGroupNewMemberJoinTimeoutMs = genericGroupNewMemberJoinTimeoutMs;
-        }
-
-        public void commit() {
-            long lastCommittedOffset = this.lastCommittedOffset;
-            this.lastCommittedOffset = lastWrittenOffset;
-            snapshotRegistry.deleteSnapshotsUpTo(lastCommittedOffset);
-        }
-
-        public void rollback() {
-            lastWrittenOffset = lastCommittedOffset;
-            snapshotRegistry.revertToSnapshot(lastCommittedOffset);
-        }
-
-        public ConsumerGroup.ConsumerGroupState consumerGroupState(
-            String groupId
-        ) {
-            return groupMetadataManager
-                .getOrMaybeCreateConsumerGroup(groupId, false)
-                .state();
-        }
-
-        public ConsumerGroupMember.MemberState consumerGroupMemberState(
-            String groupId,
-            String memberId
-        ) {
-            return groupMetadataManager
-                .getOrMaybeCreateConsumerGroup(groupId, false)
-                .getOrMaybeCreateMember(memberId, false)
-                .state();
-        }
-
-        public CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> consumerGroupHeartbeat(
-            ConsumerGroupHeartbeatRequestData request
-        ) {
-            snapshotRegistry.getOrCreateSnapshot(lastCommittedOffset);
-
-            RequestContext context = new RequestContext(
-                new RequestHeader(
-                    ApiKeys.CONSUMER_GROUP_HEARTBEAT,
-                    ApiKeys.CONSUMER_GROUP_HEARTBEAT.latestVersion(),
-                    "client",
-                    0
-                ),
-                "1",
-                InetAddress.getLoopbackAddress(),
-                KafkaPrincipal.ANONYMOUS,
-                ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT),
-                SecurityProtocol.PLAINTEXT,
-                ClientInformation.EMPTY,
-                false
-            );
-
-            CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result = groupMetadataManager.consumerGroupHeartbeat(
-                context,
-                request
-            );
-
-            result.records().forEach(this::replay);
-            return result;
-        }
-
-        public List<ExpiredTimeout<Void, Record>> sleep(long ms) {
-            time.sleep(ms);
-            List<ExpiredTimeout<Void, Record>> timeouts = timer.poll();
-            timeouts.forEach(timeout -> {
-                if (timeout.result.replayRecords()) {
-                    timeout.result.records().forEach(this::replay);
-                }
-            });
-            return timeouts;
-        }
-
-        public ScheduledTimeout<Void, Record> assertSessionTimeout(
-            String groupId,
-            String memberId,
-            long delayMs
-        ) {
-            ScheduledTimeout<Void, Record> timeout =
-                timer.timeout(consumerGroupSessionTimeoutKey(groupId, memberId));
-            assertNotNull(timeout);
-            assertEquals(time.milliseconds() + delayMs, timeout.deadlineMs);
-            return timeout;
-        }
-
-        public void assertNoSessionTimeout(
-            String groupId,
-            String memberId
-        ) {
-            ScheduledTimeout<Void, Record> timeout =
-                timer.timeout(consumerGroupSessionTimeoutKey(groupId, memberId));
-            assertNull(timeout);
-        }
-
-        public ScheduledTimeout<Void, Record> assertRevocationTimeout(
-            String groupId,
-            String memberId,
-            long delayMs
-        ) {
-            ScheduledTimeout<Void, Record> timeout =
-                timer.timeout(consumerGroupRevocationTimeoutKey(groupId, memberId));
-            assertNotNull(timeout);
-            assertEquals(time.milliseconds() + delayMs, timeout.deadlineMs);
-            return timeout;
-        }
-
-        public void assertNoRevocationTimeout(
-            String groupId,
-            String memberId
-        ) {
-            ScheduledTimeout<Void, Record> timeout =
-                timer.timeout(consumerGroupRevocationTimeoutKey(groupId, memberId));
-            assertNull(timeout);
-        }
-
-        GenericGroup createGenericGroup(String groupId) {
-            return groupMetadataManager.getOrMaybeCreateGenericGroup(groupId, true);
-        }
-
-        public CoordinatorResult<Void, Record> sendGenericGroupJoin(
-            JoinGroupRequestData request,
-            CompletableFuture<JoinGroupResponseData> responseFuture
-        ) {
-            return sendGenericGroupJoin(request, responseFuture, false);
-        }
-
-        public CoordinatorResult<Void, Record> sendGenericGroupJoin(
-            JoinGroupRequestData request,
-            CompletableFuture<JoinGroupResponseData> responseFuture,
-            boolean requireKnownMemberId
-        ) {
-            return sendGenericGroupJoin(request, responseFuture, requireKnownMemberId, false);
-        }
-
-        public CoordinatorResult<Void, Record> sendGenericGroupJoin(
-            JoinGroupRequestData request,
-            CompletableFuture<JoinGroupResponseData> responseFuture,
-            boolean requireKnownMemberId,
-            boolean supportSkippingAssignment
-        ) {
-            // requireKnownMemberId is true: version >= 4 (See JoinGroupRequest#requiresKnownMemberId())
-            // supportSkippingAssignment is true: version >= 9 (See JoinGroupRequest#supportsSkippingAssignment())
-            short joinGroupVersion = 3;
-
-            if (requireKnownMemberId) {
-                joinGroupVersion = 4;
-                if (supportSkippingAssignment) {
-                    joinGroupVersion = ApiKeys.JOIN_GROUP.latestVersion();
-                }
-            }
-
-            RequestContext context = new RequestContext(
-                new RequestHeader(
-                    ApiKeys.JOIN_GROUP,
-                    joinGroupVersion,
-                    "client",
-                    0
-                ),
-                "1",
-                InetAddress.getLoopbackAddress(),
-                KafkaPrincipal.ANONYMOUS,
-                ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT),
-                SecurityProtocol.PLAINTEXT,
-                ClientInformation.EMPTY,
-                false
-            );
-
-            return groupMetadataManager.genericGroupJoin(
-                context,
-                request,
-                responseFuture
-            );
-        }
-
-        public JoinGroupResponseData joinGenericGroupAsDynamicMemberAndCompleteJoin(
-            JoinGroupRequestData request
-        ) throws ExecutionException, InterruptedException {
-            boolean requireKnownMemberId = true;
-            String newMemberId = request.memberId();
-
-            if (request.memberId().equals(UNKNOWN_MEMBER_ID)) {
-                // Since member id is required, we need another round to get the successful join group result.
-                CompletableFuture<JoinGroupResponseData> firstJoinFuture = new CompletableFuture<>();
-                sendGenericGroupJoin(
-                    request,
-                    firstJoinFuture,
-                    requireKnownMemberId
-                );
-                assertTrue(firstJoinFuture.isDone());
-                assertEquals(Errors.MEMBER_ID_REQUIRED.code(), firstJoinFuture.get().errorCode());
-                newMemberId = firstJoinFuture.get().memberId();
-            }
-
-            // Second round
-            CompletableFuture<JoinGroupResponseData> secondJoinFuture = new CompletableFuture<>();
-            JoinGroupRequestData secondRequest = new JoinGroupRequestData()
-                .setGroupId(request.groupId())
-                .setMemberId(newMemberId)
-                .setProtocolType(request.protocolType())
-                .setProtocols(request.protocols())
-                .setSessionTimeoutMs(request.sessionTimeoutMs())
-                .setRebalanceTimeoutMs(request.rebalanceTimeoutMs())
-                .setReason(request.reason());
-
-            sendGenericGroupJoin(
-                secondRequest,
-                secondJoinFuture,
-                requireKnownMemberId
-            );
-
-            List<ExpiredTimeout<Void, Record>> timeouts = sleep(genericGroupInitialRebalanceDelayMs);
-            assertEquals(1, timeouts.size());
-            assertTrue(secondJoinFuture.isDone());
-            assertEquals(Errors.NONE.code(), secondJoinFuture.get().errorCode());
-            return secondJoinFuture.get();
-        }
-
-        public JoinGroupResponseData joinGenericGroupAndCompleteJoin(
-            JoinGroupRequestData request,
-            boolean requireKnownMemberId,
-            boolean supportSkippingAssignment
-        ) throws ExecutionException, InterruptedException {
-            return joinGenericGroupAndCompleteJoin(
-                request,
-                requireKnownMemberId,
-                supportSkippingAssignment,
-                genericGroupInitialRebalanceDelayMs
-            );
-        }
-
-        public JoinGroupResponseData joinGenericGroupAndCompleteJoin(
-            JoinGroupRequestData request,
-            boolean requireKnownMemberId,
-            boolean supportSkippingAssignment,
-            int advanceClockMs
-        ) throws ExecutionException, InterruptedException {
-            if (requireKnownMemberId && request.groupInstanceId().isEmpty()) {
-                return joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
-            }
-
-            try {
-                CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-                sendGenericGroupJoin(
-                    request,
-                    responseFuture,
-                    requireKnownMemberId,
-                    supportSkippingAssignment
-                );
-
-                sleep(advanceClockMs);
-                assertTrue(responseFuture.isDone());
-                assertEquals(Errors.NONE.code(), responseFuture.get().errorCode());
-                return responseFuture.get();
-            } catch (Exception e) {
-                fail("Failed to due: " + e.getMessage());
-            }
-            return null;
-        }
-
-        public SyncResult sendGenericGroupSync(SyncGroupRequestData request) {
-            RequestContext context = new RequestContext(
-                new RequestHeader(
-                    ApiKeys.SYNC_GROUP,
-                    ApiKeys.SYNC_GROUP.latestVersion(),
-                    "client",
-                    0
-                ),
-                "1",
-                InetAddress.getLoopbackAddress(),
-                KafkaPrincipal.ANONYMOUS,
-                ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT),
-                SecurityProtocol.PLAINTEXT,
-                ClientInformation.EMPTY,
-                false
-            );
-
-            CompletableFuture<SyncGroupResponseData> responseFuture = new CompletableFuture<>();
-
-            CoordinatorResult<Void, Record> coordinatorResult = groupMetadataManager.genericGroupSync(
-                context,
-                request,
-                responseFuture
-            );
-            
-            return new SyncResult(responseFuture, coordinatorResult);
-        }
-
-
-        public RebalanceResult staticMembersJoinAndRebalance(
-            String groupId,
-            String leaderInstanceId,
-            String followerInstanceId
-        ) throws Exception {
-            return staticMembersJoinAndRebalance(
-                groupId,
-                leaderInstanceId,
-                followerInstanceId,
-                10000,
-                5000
-            );
-        }
-
-        public RebalanceResult staticMembersJoinAndRebalance(
-            String groupId,
-            String leaderInstanceId,
-            String followerInstanceId,
-            int rebalanceTimeoutMs,
-            int sessionTimeoutMs
-        ) throws Exception {
-            GenericGroup group = createGenericGroup("group-id");
-
-            JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
-                .withGroupId(groupId)
-                .withGroupInstanceId(leaderInstanceId)
-                .withMemberId(UNKNOWN_MEMBER_ID)
-                .withProtocolType("consumer")
-                .withProtocolSuperset()
-                .withRebalanceTimeoutMs(rebalanceTimeoutMs)
-                .withSessionTimeoutMs(sessionTimeoutMs)
-                .build();
-
-            CompletableFuture<JoinGroupResponseData> leaderJoinResponseFuture = new CompletableFuture<>();
-            CoordinatorResult<Void, Record> result = sendGenericGroupJoin(joinRequest, leaderJoinResponseFuture);
-
-            assertTrue(result.records().isEmpty());
-
-            CompletableFuture<JoinGroupResponseData> followerJoinResponseFuture = new CompletableFuture<>();
-            result = sendGenericGroupJoin(
-                joinRequest.setGroupInstanceId(followerInstanceId),
-                followerJoinResponseFuture);
-
-            assertTrue(result.records().isEmpty());
-            assertFalse(leaderJoinResponseFuture.isDone());
-            assertFalse(followerJoinResponseFuture.isDone());
-
-            // The goal for two timer advance is to let first group initial join complete and set newMemberAdded flag to false. Next advance is
-            // to trigger the rebalance as needed for follower delayed join. One large time advance won't help because we could only populate one
-            // delayed join from purgatory and the new delayed op is created at that time and never be triggered.
-            assertNoOrEmptyResult(sleep(genericGroupInitialRebalanceDelayMs));
-            assertNoOrEmptyResult(sleep(genericGroupInitialRebalanceDelayMs));
-
-            assertTrue(leaderJoinResponseFuture.isDone());
-            assertTrue(followerJoinResponseFuture.isDone());
-            assertEquals(Errors.NONE.code(), leaderJoinResponseFuture.get().errorCode());
-            assertEquals(Errors.NONE.code(), followerJoinResponseFuture.get().errorCode());
-            assertEquals(1, leaderJoinResponseFuture.get().generationId());
-            assertEquals(1, followerJoinResponseFuture.get().generationId());
-            assertEquals(2, group.size());
-            assertEquals(1, group.generationId());
-            assertTrue(group.isInState(COMPLETING_REBALANCE));
-
-            String leaderId = leaderJoinResponseFuture.get().memberId();
-            String followerId = followerJoinResponseFuture.get().memberId();
-            List<SyncGroupRequestAssignment> assignment = new ArrayList<>();
-            assignment.add(new SyncGroupRequestAssignment().setMemberId(leaderId)
-                .setAssignment(new byte[]{1}));
-            assignment.add(new SyncGroupRequestAssignment().setMemberId(followerId)
-                .setAssignment(new byte[]{2}));
-
-            SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-                .withGroupId(groupId)
-                .withGroupInstanceId(leaderInstanceId)
-                .withMemberId(leaderId)
-                .withGenerationId(1)
-                .withAssignment(assignment)
-                .build();
-
-            SyncResult leaderSyncResult = sendGenericGroupSync(syncRequest);
-
-            // The generated record should contain the new assignment.
-            Map<String, byte[]> groupAssignment = assignment.stream().collect(Collectors.toMap(
-                SyncGroupRequestAssignment::memberId, SyncGroupRequestAssignment::assignment
-            ));
-            assertEquals(
-                Collections.singletonList(
-                    RecordHelpers.newGroupMetadataRecord(group, groupAssignment, MetadataVersion.latest())),
-                leaderSyncResult.records
-            );
-
-            // Simulate a successful write to the log.
-            leaderSyncResult.appendFuture.complete(null);
-
-            assertTrue(leaderSyncResult.syncFuture.isDone());
-            assertEquals(Errors.NONE.code(), leaderSyncResult.syncFuture.get().errorCode());
-            assertTrue(group.isInState(STABLE));
-
-            SyncResult followerSyncResult = sendGenericGroupSync(
-                syncRequest.setGroupInstanceId(followerInstanceId)
-                    .setMemberId(followerId)
-                    .setAssignments(Collections.emptyList())
-            );
-
-            assertTrue(followerSyncResult.records.isEmpty());
-            assertTrue(followerSyncResult.syncFuture.isDone());
-            assertEquals(Errors.NONE.code(), followerSyncResult.syncFuture.get().errorCode());
-            assertTrue(group.isInState(STABLE));
-
-            assertEquals(2, group.size());
-            assertEquals(1, group.generationId());
-
-            return new RebalanceResult(
-                1,
-                leaderId,
-                leaderSyncResult.syncFuture.get().assignment(),
-                followerId,
-                followerSyncResult.syncFuture.get().assignment()
-            );
-        }
-
-        public JoinGroupResponseData setupGroupWithPendingMember(GenericGroup group) throws Exception {
-            // Add the first member
-            JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
-                .withGroupId("group-id")
-                .withMemberId(UNKNOWN_MEMBER_ID)
-                .withDefaultProtocolTypeAndProtocols()
-                .withRebalanceTimeoutMs(10000)
-                .withSessionTimeoutMs(5000)
-                .build();
-
-            JoinGroupResponseData leaderJoinResponse =
-                joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
-
-            String leaderId = leaderJoinResponse.memberId();
-            int generationId = leaderJoinResponse.generationId();
-
-            List<SyncGroupRequestAssignment> assignment = new ArrayList<>();
-            assignment.add(new SyncGroupRequestAssignment().setMemberId(leaderId));
-            SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-                .withGroupId("group-id")
-                .withMemberId(leaderId)
-                .withGenerationId(generationId)
-                .withAssignment(assignment)
-                .build();
-
-            SyncResult syncResult = sendGenericGroupSync(syncRequest);
-
-            // Now the group is stable, with the one member that joined above
-            assertEquals(
-                Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-                syncResult.records
-            );
-            // Simulate a successful write to log.
-            syncResult.appendFuture.complete(null);
-
-            assertTrue(syncResult.syncFuture.isDone());
-            assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
-
-            // Start the join for the second member
-            CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-            CoordinatorResult<Void, Record> result = sendGenericGroupJoin(
-                joinRequest.setMemberId(UNKNOWN_MEMBER_ID),
-                followerJoinFuture
-            );
-
-            assertTrue(result.records().isEmpty());
-            assertFalse(followerJoinFuture.isDone());
-
-            CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-            result = sendGenericGroupJoin(joinRequest.setMemberId(leaderId), leaderJoinFuture);
-
-            assertTrue(result.records().isEmpty());
-            assertTrue(group.isInState(COMPLETING_REBALANCE));
-            assertTrue(leaderJoinFuture.isDone());
-            assertTrue(followerJoinFuture.isDone());
-            assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-            assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
-            assertEquals(leaderJoinFuture.get().generationId(), followerJoinFuture.get().generationId());
-            assertEquals(leaderId, leaderJoinFuture.get().leader());
-            assertEquals(leaderId, followerJoinFuture.get().leader());
-
-            int nextGenerationId = leaderJoinFuture.get().generationId();
-            String followerId = followerJoinFuture.get().memberId();
-
-            // Stabilize the group
-            syncResult = sendGenericGroupSync(syncRequest.setGenerationId(nextGenerationId));
-
-            assertEquals(
-                Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-                syncResult.records
-            );
-            // Simulate a successful write to log.
-            syncResult.appendFuture.complete(null);
-
-            assertTrue(syncResult.syncFuture.isDone());
-            assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
-            assertTrue(group.isInState(STABLE));
-
-            // Re-join an existing member, to transition the group to PreparingRebalance state.
-            leaderJoinFuture = new CompletableFuture<>();
-            result = sendGenericGroupJoin(joinRequest.setMemberId(leaderId), leaderJoinFuture);
-
-            assertTrue(result.records().isEmpty());
-            assertFalse(leaderJoinFuture.isDone());
-            assertTrue(group.isInState(PREPARING_REBALANCE));
-
-            // Create a pending member in the group
-            CompletableFuture<JoinGroupResponseData> pendingMemberJoinFuture = new CompletableFuture<>();
-            result = sendGenericGroupJoin(
-                joinRequest.setMemberId(UNKNOWN_MEMBER_ID).setSessionTimeoutMs(2500),
-                pendingMemberJoinFuture,
-                true
-            );
-
-            assertTrue(result.records().isEmpty());
-            assertTrue(pendingMemberJoinFuture.isDone());
-            assertEquals(Errors.MEMBER_ID_REQUIRED.code(), pendingMemberJoinFuture.get().errorCode());
-            assertEquals(1, group.numPendingJoinMembers());
-
-            // Re-join the second existing member
-            followerJoinFuture = new CompletableFuture<>();
-            result = sendGenericGroupJoin(
-                joinRequest.setMemberId(followerId).setSessionTimeoutMs(5000),
-                followerJoinFuture
-            );
-
-            assertTrue(result.records().isEmpty());
-            assertFalse(followerJoinFuture.isDone());
-            assertTrue(group.isInState(PREPARING_REBALANCE));
-            assertEquals(1, group.numPendingJoinMembers());
-
-            return pendingMemberJoinFuture.get();
-        }
-
-        public void verifySessionExpiration(GenericGroup group, int timeoutMs) {
-            Set<String> expectedHeartbeatKeys = group.allMembers().stream()
-                .map(member -> genericGroupHeartbeatKey(group.groupId(), member.memberId())).collect(Collectors.toSet());
-
-            // Member should be removed as session expires.
-            List<ExpiredTimeout<Void, Record>> timeouts = sleep(timeoutMs);
-            List<Record> expectedRecords = Collections.singletonList(newGroupMetadataRecord(
-                group.groupId(),
-                new GroupMetadataValue()
-                    .setMembers(Collections.emptyList())
-                    .setGeneration(group.generationId())
-                    .setLeader(null)
-                    .setProtocolType("consumer")
-                    .setProtocol(null)
-                    .setCurrentStateTimestamp(time.milliseconds()),
-                MetadataVersion.latest()));
-
-
-            Set<String> heartbeatKeys = timeouts.stream().map(timeout -> timeout.key).collect(Collectors.toSet());
-            assertEquals(expectedHeartbeatKeys, heartbeatKeys);
-
-            // Only the last member leaving the group should result in the empty group metadata record.
-            int timeoutsSize = timeouts.size();
-            assertEquals(expectedRecords, timeouts.get(timeoutsSize - 1).result.records());
-            assertNoOrEmptyResult(timeouts.subList(0, timeoutsSize - 1));
-            assertTrue(group.isInState(EMPTY));
-            assertEquals(0, group.size());
-        }
-
-        private ApiMessage messageOrNull(ApiMessageAndVersion apiMessageAndVersion) {
-            if (apiMessageAndVersion == null) {
-                return null;
-            } else {
-                return apiMessageAndVersion.message();
-            }
-        }
-
-        private void replay(
-            Record record
-        ) {
-            ApiMessageAndVersion key = record.key();
-            ApiMessageAndVersion value = record.value();
-
-            if (key == null) {
-                throw new IllegalStateException("Received a null key in " + record);
-            }
-
-            switch (key.version()) {
-                case GroupMetadataKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (GroupMetadataKey) key.message(),
-                        (GroupMetadataValue) messageOrNull(value)
-                    );
-                    break;
-
-                case ConsumerGroupMemberMetadataKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (ConsumerGroupMemberMetadataKey) key.message(),
-                        (ConsumerGroupMemberMetadataValue) messageOrNull(value)
-                    );
-                    break;
-
-                case ConsumerGroupMetadataKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (ConsumerGroupMetadataKey) key.message(),
-                        (ConsumerGroupMetadataValue) messageOrNull(value)
-                    );
-                    break;
-
-                case ConsumerGroupPartitionMetadataKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (ConsumerGroupPartitionMetadataKey) key.message(),
-                        (ConsumerGroupPartitionMetadataValue) messageOrNull(value)
-                    );
-                    break;
-
-                case ConsumerGroupTargetAssignmentMemberKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (ConsumerGroupTargetAssignmentMemberKey) key.message(),
-                        (ConsumerGroupTargetAssignmentMemberValue) messageOrNull(value)
-                    );
-                    break;
-
-                case ConsumerGroupTargetAssignmentMetadataKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (ConsumerGroupTargetAssignmentMetadataKey) key.message(),
-                        (ConsumerGroupTargetAssignmentMetadataValue) messageOrNull(value)
-                    );
-                    break;
-
-                case ConsumerGroupCurrentMemberAssignmentKey.HIGHEST_SUPPORTED_VERSION:
-                    groupMetadataManager.replay(
-                        (ConsumerGroupCurrentMemberAssignmentKey) key.message(),
-                        (ConsumerGroupCurrentMemberAssignmentValue) messageOrNull(value)
-                    );
-                    break;
-
-                default:
-                    throw new IllegalStateException("Received an unknown record type " + key.version()
-                        + " in " + record);
-            }
-
-            lastWrittenOffset++;
-        }
-    }
-
     @Test
     public void testConsumerHeartbeatRequestValidation() {
         MockPartitionAssignor assignor = new MockPartitionAssignor("range");
@@ -1033,6 +146,12 @@ public class GroupMetadataManagerTest {
         // GroupId must be present in all requests.
         ex = assertThrows(InvalidRequestException.class, () -> context.consumerGroupHeartbeat(
             new ConsumerGroupHeartbeatRequestData()));
+        assertEquals("GroupId can't be empty.", ex.getMessage());
+
+        // GroupId can't be all whitespaces.
+        ex = assertThrows(InvalidRequestException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId("   ")));
         assertEquals("GroupId can't be empty.", ex.getMessage());
 
         // RebalanceTimeoutMs must be present in the first request (epoch == 0).
@@ -1093,6 +212,17 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setServerAssignor("bar")));
         assertEquals("ServerAssignor bar is not supported. Supported assignors: range.", ex.getMessage());
+
+        ex = assertThrows(InvalidRequestException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId("foo")
+                .setMemberId(Uuid.randomUuid().toString())
+                .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList())));
+
+        assertEquals("InstanceId can't be null.", ex.getMessage());
     }
 
     @Test
@@ -1206,9 +336,9 @@ public class GroupMetadataManagerTest {
             .build();
 
         ConsumerGroupMember member = new ConsumerGroupMember.Builder(memberId)
+            .setState(MemberState.STABLE)
             .setMemberEpoch(100)
             .setPreviousMemberEpoch(99)
-            .setTargetMemberEpoch(100)
             .setRebalanceTimeoutMs(5000)
             .setClientId("client")
             .setClientHost("localhost/127.0.0.1")
@@ -1292,6 +422,7 @@ public class GroupMetadataManagerTest {
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
                 .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
                 .build())
             .build();
 
@@ -1321,7 +452,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1, 2, 3, 4, 5)),
@@ -1333,9 +464,9 @@ public class GroupMetadataManagerTest {
         );
 
         ConsumerGroupMember expectedMember = new ConsumerGroupMember.Builder(memberId)
+            .setState(MemberState.STABLE)
             .setMemberEpoch(1)
             .setPreviousMemberEpoch(0)
-            .setTargetMemberEpoch(1)
             .setClientId("client")
             .setClientHost("localhost/127.0.0.1")
             .setRebalanceTimeoutMs(5000)
@@ -1349,8 +480,8 @@ public class GroupMetadataManagerTest {
         List<Record> expectedRecords = Arrays.asList(
             RecordHelpers.newMemberSubscriptionRecord(groupId, expectedMember),
             RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {{
-                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6));
-                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3));
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
                 }}),
             RecordHelpers.newGroupEpochRecord(groupId, 1),
             RecordHelpers.newTargetAssignmentRecord(groupId, memberId, mkAssignment(
@@ -1381,15 +512,16 @@ public class GroupMetadataManagerTest {
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
                 .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
-                    .setSubscribedTopicNames(Arrays.asList("foo"))
+                    .setSubscribedTopicNames(Collections.singletonList("foo"))
                     .setServerAssignorName("range")
                     .setAssignedPartitions(mkAssignment(
                         mkTopicAssignment(fooTopicId, 0, 1, 2, 3, 4, 5)))
@@ -1419,7 +551,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1, 2, 3, 4, 5)),
@@ -1431,9 +563,9 @@ public class GroupMetadataManagerTest {
         );
 
         ConsumerGroupMember expectedMember = new ConsumerGroupMember.Builder(memberId)
+            .setState(MemberState.STABLE)
             .setMemberEpoch(11)
             .setPreviousMemberEpoch(10)
-            .setTargetMemberEpoch(11)
             .setClientId("client")
             .setClientHost("localhost/127.0.0.1")
             .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
@@ -1447,8 +579,8 @@ public class GroupMetadataManagerTest {
             RecordHelpers.newMemberSubscriptionRecord(groupId, expectedMember),
             RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
                 {
-                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6));
-                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3));
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
                 }
             }),
             RecordHelpers.newGroupEpochRecord(groupId, 11),
@@ -1482,12 +614,13 @@ public class GroupMetadataManagerTest {
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
                 .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -1498,9 +631,9 @@ public class GroupMetadataManagerTest {
                         mkTopicAssignment(barTopicId, 0, 1)))
                     .build())
                 .withMember(new ConsumerGroupMember.Builder(memberId2)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -1554,34 +687,29 @@ public class GroupMetadataManagerTest {
                 .setMemberId(memberId3)
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(4, 5)),
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(2))
-                    ))),
+                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()),
             result.response()
         );
 
         ConsumerGroupMember expectedMember3 = new ConsumerGroupMember.Builder(memberId3)
+            .setState(MemberState.UNRELEASED_PARTITIONS)
             .setMemberEpoch(11)
             .setPreviousMemberEpoch(0)
-            .setTargetMemberEpoch(11)
             .setClientId("client")
             .setClientHost("localhost/127.0.0.1")
             .setRebalanceTimeoutMs(5000)
             .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
             .setServerAssignorName("range")
-            .setPartitionsPendingAssignment(mkAssignment(
-                mkTopicAssignment(fooTopicId, 4, 5),
-                mkTopicAssignment(barTopicId, 2)))
             .build();
 
         List<Record> expectedRecords = Arrays.asList(
             RecordHelpers.newMemberSubscriptionRecord(groupId, expectedMember3),
+            RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
+                {
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
+                }
+            }),
             RecordHelpers.newGroupEpochRecord(groupId, 11),
             RecordHelpers.newTargetAssignmentRecord(groupId, memberId1, mkAssignment(
                 mkTopicAssignment(fooTopicId, 0, 1),
@@ -1599,9 +727,9 @@ public class GroupMetadataManagerTest {
             RecordHelpers.newCurrentAssignmentRecord(groupId, expectedMember3)
         );
 
-        assertRecordsEquals(expectedRecords.subList(0, 2), result.records().subList(0, 2));
-        assertUnorderedListEquals(expectedRecords.subList(2, 5), result.records().subList(2, 5));
-        assertRecordsEquals(expectedRecords.subList(5, 7), result.records().subList(5, 7));
+        assertRecordsEquals(expectedRecords.subList(0, 3), result.records().subList(0, 3));
+        assertUnorderedListEquals(expectedRecords.subList(3, 6), result.records().subList(3, 6));
+        assertRecordsEquals(expectedRecords.subList(6, 8), result.records().subList(6, 8));
     }
 
     @Test
@@ -1627,12 +755,13 @@ public class GroupMetadataManagerTest {
                 .addTopic(fooTopicId, fooTopicName, 6)
                 .addTopic(barTopicId, barTopicName, 3)
                 .addTopic(zarTopicId, zarTopicName, 1)
+                .addRacks()
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
@@ -1642,9 +771,9 @@ public class GroupMetadataManagerTest {
                         mkTopicAssignment(barTopicId, 0, 1)))
                     .build())
                 .withMember(new ConsumerGroupMember.Builder(memberId2)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     // Use zar only here to ensure that metadata needs to be recomputed.
@@ -1668,7 +797,7 @@ public class GroupMetadataManagerTest {
             new ConsumerGroupHeartbeatRequestData()
                 .setGroupId(groupId)
                 .setMemberId(memberId2)
-                .setMemberEpoch(-1)
+                .setMemberEpoch(LEAVE_GROUP_MEMBER_EPOCH)
                 .setRebalanceTimeoutMs(5000)
                 .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
                 .setTopicPartitions(Collections.emptyList()));
@@ -1676,7 +805,7 @@ public class GroupMetadataManagerTest {
         assertResponseEquals(
             new ConsumerGroupHeartbeatResponseData()
                 .setMemberId(memberId2)
-                .setMemberEpoch(-1),
+                .setMemberEpoch(LEAVE_GROUP_MEMBER_EPOCH),
             result.response()
         );
 
@@ -1687,14 +816,838 @@ public class GroupMetadataManagerTest {
             // Subscription metadata is recomputed because zar is no longer there.
             RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
                 {
-                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6));
-                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3));
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
                 }
             }),
             RecordHelpers.newGroupEpochRecord(groupId, 11)
         );
 
         assertRecordsEquals(expectedRecords, result.records());
+    }
+
+    @Test
+    public void testGroupEpochBumpWhenNewStaticMemberJoins() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+        String memberId2 = Uuid.randomUuid().toString();
+        String memberId3 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+        Uuid barTopicId = Uuid.randomUuid();
+        String barTopicName = "bar";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with two static members.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2),
+                        mkTopicAssignment(barTopicId, 0, 1)))
+                    .build())
+                .withMember(new ConsumerGroupMember.Builder(memberId2)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId2)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    // Use zar only here to ensure that metadata needs to be recomputed.
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar", "zar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 3, 4, 5),
+                        mkTopicAssignment(barTopicId, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2),
+                    mkTopicAssignment(barTopicId, 0, 1)))
+                .withAssignment(memberId2, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 3, 4, 5),
+                    mkTopicAssignment(barTopicId, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        assignor.prepareGroupAssignment(new GroupAssignment(
+            new HashMap<String, MemberAssignment>() {
+                {
+                    put(memberId1, new MemberAssignment(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1),
+                        mkTopicAssignment(barTopicId, 0)
+                    )));
+                    put(memberId2, new MemberAssignment(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 2, 3),
+                        mkTopicAssignment(barTopicId, 1)
+                    )));
+                    put(memberId3, new MemberAssignment(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 4, 5),
+                        mkTopicAssignment(barTopicId, 2)
+                    )));
+                }
+            }
+        ));
+
+        // Member 3 joins the consumer group.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId3)
+                .setInstanceId(memberId3)
+                .setMemberEpoch(0)
+                .setRebalanceTimeoutMs(5000)
+                .setServerAssignor("range")
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        assertResponseEquals(
+            new ConsumerGroupHeartbeatResponseData()
+                .setMemberId(memberId3)
+                .setMemberEpoch(11)
+                .setHeartbeatIntervalMs(5000)
+                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()),
+            result.response()
+        );
+
+        ConsumerGroupMember expectedMember3 = new ConsumerGroupMember.Builder(memberId3)
+            .setMemberEpoch(11)
+            .setState(MemberState.UNRELEASED_PARTITIONS)
+            .setInstanceId(memberId3)
+            .setPreviousMemberEpoch(0)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            .setRebalanceTimeoutMs(5000)
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .build();
+
+        List<Record> expectedRecords = Arrays.asList(
+            RecordHelpers.newMemberSubscriptionRecord(groupId, expectedMember3),
+            RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
+                {
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
+                }
+            }),
+            RecordHelpers.newGroupEpochRecord(groupId, 11),
+            RecordHelpers.newTargetAssignmentRecord(groupId, memberId1, mkAssignment(
+                mkTopicAssignment(fooTopicId, 0, 1),
+                mkTopicAssignment(barTopicId, 0)
+            )),
+            RecordHelpers.newTargetAssignmentRecord(groupId, memberId2, mkAssignment(
+                mkTopicAssignment(fooTopicId, 2, 3),
+                mkTopicAssignment(barTopicId, 1)
+            )),
+            RecordHelpers.newTargetAssignmentRecord(groupId, memberId3, mkAssignment(
+                mkTopicAssignment(fooTopicId, 4, 5),
+                mkTopicAssignment(barTopicId, 2)
+            )),
+            RecordHelpers.newTargetAssignmentEpochRecord(groupId, 11),
+            RecordHelpers.newCurrentAssignmentRecord(groupId, expectedMember3)
+        );
+
+        assertRecordsEquals(expectedRecords.subList(0, 3), result.records().subList(0, 3));
+        assertUnorderedListEquals(expectedRecords.subList(3, 6), result.records().subList(3, 6));
+        assertRecordsEquals(expectedRecords.subList(6, 8), result.records().subList(6, 8));
+    }
+
+    @Test
+    public void testStaticMemberGetsBackAssignmentUponRejoin() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+        String memberId2 = Uuid.randomUuid().toString();
+        String member2RejoinId = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+        Uuid barTopicId = Uuid.randomUuid();
+        String barTopicName = "bar";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        ConsumerGroupMember member1 = new ConsumerGroupMember.Builder(memberId1)
+            .setState(MemberState.STABLE)
+            .setInstanceId(memberId1)
+            .setMemberEpoch(10)
+            .setPreviousMemberEpoch(9)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .setAssignedPartitions(mkAssignment(
+                mkTopicAssignment(fooTopicId, 0, 1, 2),
+                mkTopicAssignment(barTopicId, 0, 1)))
+            .build();
+        ConsumerGroupMember member2 = new ConsumerGroupMember.Builder(memberId2)
+            .setState(MemberState.STABLE)
+            .setInstanceId(memberId2)
+            .setMemberEpoch(10)
+            .setPreviousMemberEpoch(9)
+            .setRebalanceTimeoutMs(5000)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .setAssignedPartitions(mkAssignment(
+                    mkTopicAssignment(fooTopicId, 3, 4, 5),
+                    mkTopicAssignment(barTopicId, 2)))
+            .build();
+
+        // Consumer group with two static members.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(member1)
+                .withMember(member2)
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2),
+                    mkTopicAssignment(barTopicId, 0, 1)))
+                .withAssignment(memberId2, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 3, 4, 5),
+                    mkTopicAssignment(barTopicId, 2)))
+                .withAssignmentEpoch(10)
+                .withSubscriptionMetadata(new HashMap<String, TopicMetadata>() {
+                    {
+                        put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                        put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
+                    }
+                }))
+            .build();
+
+        assignor.prepareGroupAssignment(new GroupAssignment(
+            new HashMap<String, MemberAssignment>() {
+                {
+                    put(memberId1, new MemberAssignment(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2),
+                        mkTopicAssignment(barTopicId, 0, 1)
+                    )));
+                    // When the member rejoins, it gets the same assignments.
+                    put(member2RejoinId, new MemberAssignment(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 3, 4, 5),
+                        mkTopicAssignment(barTopicId, 2)
+                    )));
+                }
+            }
+        ));
+
+        // Member 2 leaves the consumer group.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId2)
+                .setInstanceId(memberId2)
+                .setMemberEpoch(-2)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        // Member epoch of the response would be set to -2.
+        assertResponseEquals(
+            new ConsumerGroupHeartbeatResponseData()
+                .setMemberId(memberId2)
+                .setMemberEpoch(-2),
+            result.response()
+        );
+
+        // The departing static member will have it's epoch set to -2.
+        ConsumerGroupMember member2UpdatedEpoch = new ConsumerGroupMember.Builder(member2)
+            .setMemberEpoch(-2)
+            .build();
+
+        assertEquals(1, result.records().size());
+        assertRecordEquals(result.records().get(0), RecordHelpers.newCurrentAssignmentRecord(groupId, member2UpdatedEpoch));
+
+        // Member 2 rejoins the group with the same instance id.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> rejoinResult = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setMemberId(member2RejoinId)
+                .setGroupId(groupId)
+                .setInstanceId(memberId2)
+                .setMemberEpoch(0)
+                .setRebalanceTimeoutMs(5000)
+                .setServerAssignor("range")
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        assertResponseEquals(
+            new ConsumerGroupHeartbeatResponseData()
+                .setMemberId(member2RejoinId)
+                .setMemberEpoch(10)
+                .setHeartbeatIntervalMs(5000)
+                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
+                    .setTopicPartitions(Arrays.asList(
+                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
+                            .setTopicId(fooTopicId)
+                            .setPartitions(Arrays.asList(3, 4, 5)),
+                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
+                            .setTopicId(barTopicId)
+                            .setPartitions(Collections.singletonList(2))
+                    ))),
+            rejoinResult.response()
+        );
+
+        ConsumerGroupMember expectedRejoinedMember = new ConsumerGroupMember.Builder(member2RejoinId)
+            .setState(MemberState.STABLE)
+            .setMemberEpoch(10)
+            .setInstanceId(memberId2)
+            .setPreviousMemberEpoch(0)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            .setRebalanceTimeoutMs(5000)
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .setAssignedPartitions(mkAssignment(
+                mkTopicAssignment(fooTopicId, 3, 4, 5),
+                mkTopicAssignment(barTopicId, 2)))
+            .build();
+
+        List<Record> expectedRecordsAfterRejoin = Arrays.asList(
+            RecordHelpers.newCurrentAssignmentTombstoneRecord(groupId, memberId2),
+            RecordHelpers.newTargetAssignmentTombstoneRecord(groupId, memberId2),
+            RecordHelpers.newMemberSubscriptionTombstoneRecord(groupId, memberId2),
+            RecordHelpers.newMemberSubscriptionRecord(groupId, expectedRejoinedMember),
+            RecordHelpers.newTargetAssignmentRecord(groupId, member2RejoinId, mkAssignment(
+                mkTopicAssignment(fooTopicId, 3, 4, 5),
+                mkTopicAssignment(barTopicId, 2))),
+            RecordHelpers.newTargetAssignmentEpochRecord(groupId, 10),
+            RecordHelpers.newCurrentAssignmentRecord(groupId, expectedRejoinedMember)
+        );
+
+        assertRecordsEquals(expectedRecordsAfterRejoin, rejoinResult.records());
+        // Verify that there are no timers.
+        context.assertNoSessionTimeout(groupId, memberId2);
+        context.assertNoRebalanceTimeout(groupId, memberId2);
+    }
+
+    @Test
+    public void testNoGroupEpochBumpWhenStaticMemberTemporarilyLeaves() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+        String memberId2 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+        Uuid barTopicId = Uuid.randomUuid();
+        String barTopicName = "bar";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        ConsumerGroupMember member1 = new ConsumerGroupMember.Builder(memberId1)
+            .setState(MemberState.STABLE)
+            .setInstanceId(memberId1)
+            .setMemberEpoch(10)
+            .setPreviousMemberEpoch(9)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .setAssignedPartitions(mkAssignment(
+                mkTopicAssignment(fooTopicId, 0, 1, 2),
+                mkTopicAssignment(barTopicId, 0, 1)))
+            .build();
+        ConsumerGroupMember member2 = new ConsumerGroupMember.Builder(memberId2)
+            .setState(MemberState.STABLE)
+            .setInstanceId(memberId2)
+            .setMemberEpoch(10)
+            .setPreviousMemberEpoch(9)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            // Use zar only here to ensure that metadata needs to be recomputed.
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .setAssignedPartitions(mkAssignment(
+                mkTopicAssignment(fooTopicId, 3, 4, 5),
+                mkTopicAssignment(barTopicId, 2)))
+            .build();
+
+        // Consumer group with two static members.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(member1)
+                .withMember(member2)
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2),
+                    mkTopicAssignment(barTopicId, 0, 1)))
+                .withAssignment(memberId2, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 3, 4, 5),
+                    mkTopicAssignment(barTopicId, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        // Member 2 leaves the consumer group.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId2)
+                .setInstanceId(memberId2)
+                .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        // member epoch of the response would be set to -2
+        assertResponseEquals(
+            new ConsumerGroupHeartbeatResponseData()
+                .setMemberId(memberId2)
+                .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH),
+            result.response()
+        );
+
+        ConsumerGroupMember member2UpdatedEpoch = new ConsumerGroupMember
+            .Builder(member2)
+            .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH)
+            .build();
+
+        assertEquals(1, result.records().size());
+        assertRecordEquals(result.records().get(0), RecordHelpers.newCurrentAssignmentRecord(groupId, member2UpdatedEpoch));
+    }
+
+    @Test
+    public void testLeavingStaticMemberBumpsGroupEpoch() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+        String memberId2 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+        Uuid barTopicId = Uuid.randomUuid();
+        String barTopicName = "bar";
+        Uuid zarTopicId = Uuid.randomUuid();
+        String zarTopicName = "zar";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with two static members.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addTopic(barTopicId, barTopicName, 3)
+                .addTopic(zarTopicId, zarTopicName, 1)
+                .addRacks()
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2),
+                        mkTopicAssignment(barTopicId, 0, 1)))
+                    .build())
+                .withMember(new ConsumerGroupMember.Builder(memberId2)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId2)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    // Use zar only here to ensure that metadata needs to be recomputed.
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar", "zar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 3, 4, 5),
+                        mkTopicAssignment(barTopicId, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2),
+                    mkTopicAssignment(barTopicId, 0, 1)))
+                .withAssignment(memberId2, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 3, 4, 5),
+                    mkTopicAssignment(barTopicId, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        // Member 2 leaves the consumer group.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setInstanceId(memberId2)
+                .setMemberId(memberId2)
+                .setMemberEpoch(LEAVE_GROUP_MEMBER_EPOCH)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        assertResponseEquals(
+            new ConsumerGroupHeartbeatResponseData()
+                .setMemberId(memberId2)
+                .setMemberEpoch(LEAVE_GROUP_MEMBER_EPOCH),
+            result.response()
+        );
+
+        List<Record> expectedRecords = Arrays.asList(
+            RecordHelpers.newCurrentAssignmentTombstoneRecord(groupId, memberId2),
+            RecordHelpers.newTargetAssignmentTombstoneRecord(groupId, memberId2),
+            RecordHelpers.newMemberSubscriptionTombstoneRecord(groupId, memberId2),
+            // Subscription metadata is recomputed because zar is no longer there.
+            RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
+                {
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
+                    put(barTopicName, new TopicMetadata(barTopicId, barTopicName, 3, mkMapOfPartitionRacks(3)));
+                }
+            }),
+            RecordHelpers.newGroupEpochRecord(groupId, 11)
+        );
+
+        assertRecordsEquals(expectedRecords, result.records());
+    }
+
+    @Test
+    public void testShouldThrownUnreleasedInstanceIdExceptionWhenNewMemberJoinsWithInUseInstanceId() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+        String memberId2 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with one static member.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addRacks()
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        // Member 2 joins the consumer group with an in-use instance id.
+        assertThrows(UnreleasedInstanceIdException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId2)
+                .setInstanceId(memberId1)
+                .setMemberEpoch(0)
+                .setRebalanceTimeoutMs(5000)
+                .setServerAssignor("range")
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList())));
+    }
+
+    @Test
+    public void testShouldThrownUnknownMemberIdExceptionWhenUnknownStaticMemberJoins() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+        String memberId2 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with one static member.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        // Member 2 joins the consumer group with a non-zero epoch
+        assertThrows(UnknownMemberIdException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId2)
+                .setInstanceId(memberId2)
+                .setMemberEpoch(10)
+                .setRebalanceTimeoutMs(5000)
+                .setServerAssignor("range")
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList())));
+    }
+
+    @Test
+    public void testShouldThrowFencedInstanceIdExceptionWhenStaticMemberWithDifferentMemberIdJoins() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with one static member.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        assertThrows(FencedInstanceIdException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId("unknown-" + memberId1)
+                .setInstanceId(memberId1)
+                .setMemberEpoch(11)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList())));
+    }
+
+    @Test
+    public void testConsumerGroupMemberEpochValidationForStaticMember() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId = Uuid.randomUuid().toString();
+        Uuid fooTopicId = Uuid.randomUuid();
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .build();
+
+        ConsumerGroupMember member = new ConsumerGroupMember.Builder(memberId)
+            .setState(MemberState.STABLE)
+            .setInstanceId(memberId)
+            .setMemberEpoch(100)
+            .setPreviousMemberEpoch(99)
+            .setRebalanceTimeoutMs(5000)
+            .setClientId("client")
+            .setClientHost("localhost/127.0.0.1")
+            .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+            .setServerAssignorName("range")
+            .setAssignedPartitions(mkAssignment(mkTopicAssignment(fooTopicId, 1, 2, 3)))
+            .build();
+
+        context.replay(RecordHelpers.newMemberSubscriptionRecord(groupId, member));
+
+        context.replay(RecordHelpers.newGroupEpochRecord(groupId, 100));
+
+        context.replay(RecordHelpers.newTargetAssignmentRecord(groupId, memberId, mkAssignment(
+            mkTopicAssignment(fooTopicId, 1, 2, 3)
+        )));
+
+        context.replay(RecordHelpers.newTargetAssignmentEpochRecord(groupId, 100));
+
+        context.replay(RecordHelpers.newCurrentAssignmentRecord(groupId, member));
+
+        // Member epoch is greater than the expected epoch.
+        assertThrows(FencedMemberEpochException.class, () ->
+            context.consumerGroupHeartbeat(
+                new ConsumerGroupHeartbeatRequestData()
+                    .setGroupId(groupId)
+                    .setMemberId(memberId)
+                    .setInstanceId(memberId)
+                    .setMemberEpoch(200)
+                    .setRebalanceTimeoutMs(5000)
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))));
+
+        // Member epoch is smaller than the expected epoch.
+        assertThrows(FencedMemberEpochException.class, () ->
+            context.consumerGroupHeartbeat(
+                new ConsumerGroupHeartbeatRequestData()
+                    .setGroupId(groupId)
+                    .setMemberId(memberId)
+                    .setInstanceId(memberId)
+                    .setMemberEpoch(50)
+                    .setRebalanceTimeoutMs(5000)
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))));
+
+        // Member joins with previous epoch but without providing partitions.
+        assertThrows(FencedMemberEpochException.class, () ->
+            context.consumerGroupHeartbeat(
+                new ConsumerGroupHeartbeatRequestData()
+                    .setGroupId(groupId)
+                    .setMemberId(memberId)
+                    .setInstanceId(memberId)
+                    .setMemberEpoch(99)
+                    .setRebalanceTimeoutMs(5000)
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))));
+
+        // Member joins with previous epoch and has a subset of the owned partitions. This
+        // is accepted as the response with the bumped epoch may have been lost. In this
+        // case, we provide back the correct epoch to the member.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId)
+                .setInstanceId(memberId)
+                .setMemberEpoch(99)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.singletonList(new ConsumerGroupHeartbeatRequestData.TopicPartitions()
+                    .setTopicId(fooTopicId)
+                    .setPartitions(Arrays.asList(1, 2)))));
+        assertEquals(100, result.response().memberEpoch());
+    }
+
+    @Test
+    public void testShouldThrowUnknownMemberIdExceptionWhenUnknownStaticMemberLeaves() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with one static member.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        assertThrows(UnknownMemberIdException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId1)
+                .setInstanceId("unknown-" + memberId1)
+                .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList())));
+    }
+
+    @Test
+    public void testShouldThrowFencedInstanceIdExceptionWhenStaticMemberWithDifferentMemberIdLeaves() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId1 = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+
+        // Consumer group with one static member.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .build())
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
+                .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
+                    .setInstanceId(memberId1)
+                    .setMemberEpoch(10)
+                    .setPreviousMemberEpoch(9)
+                    .setClientId("client")
+                    .setClientHost("localhost/127.0.0.1")
+                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                    .setServerAssignorName("range")
+                    .setAssignedPartitions(mkAssignment(
+                        mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                    .build())
+                .withAssignment(memberId1, mkAssignment(
+                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
+                .withAssignmentEpoch(10))
+            .build();
+
+        assertThrows(FencedInstanceIdException.class, () -> context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId("unknown-" + memberId1)
+                .setInstanceId(memberId1)
+                .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH)
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList())));
     }
 
     @Test
@@ -1717,12 +1670,13 @@ public class GroupMetadataManagerTest {
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
                 .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -1733,9 +1687,9 @@ public class GroupMetadataManagerTest {
                         mkTopicAssignment(barTopicId, 0, 1)))
                     .build())
                 .withMember(new ConsumerGroupMember.Builder(memberId2)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -1777,13 +1731,14 @@ public class GroupMetadataManagerTest {
         CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result;
 
         // Members in the group are in Stable state.
-        assertEquals(ConsumerGroupMember.MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId1));
-        assertEquals(ConsumerGroupMember.MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId2));
+        assertEquals(MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId1));
+        assertEquals(MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId2));
         assertEquals(ConsumerGroup.ConsumerGroupState.STABLE, context.consumerGroupState(groupId));
 
         // Member 3 joins the group. This triggers the computation of a new target assignment
         // for the group. Member 3 does not get any assigned partitions yet because they are
-        // all owned by other members. However, it transitions to epoch 11 / Assigning state.
+        // all owned by other members. However, it transitions to epoch 11 and the
+        // Unreleased Partitions state.
         result = context.consumerGroupHeartbeat(
             new ConsumerGroupHeartbeatRequestData()
                 .setGroupId(groupId)
@@ -1799,15 +1754,7 @@ public class GroupMetadataManagerTest {
                 .setMemberId(memberId3)
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(4, 5)),
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(1))
-                    ))),
+                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()),
             result.response()
         );
 
@@ -1815,21 +1762,18 @@ public class GroupMetadataManagerTest {
         // already covered by other tests.
         assertRecordEquals(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId3)
+                .setState(MemberState.UNRELEASED_PARTITIONS)
                 .setMemberEpoch(11)
                 .setPreviousMemberEpoch(0)
-                .setTargetMemberEpoch(11)
-                .setPartitionsPendingAssignment(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 4, 5),
-                    mkTopicAssignment(barTopicId, 1)))
                 .build()),
             result.records().get(result.records().size() - 1)
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId3));
+        assertEquals(MemberState.UNRELEASED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId3));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
-        // Member 1 heartbeats. It remains at epoch 10 but transitions to Revoking state until
-        // it acknowledges the revocation of its partitions. The response contains the new
+        // Member 1 heartbeats. It remains at epoch 10 but transitions to Unrevoked Partitions
+        // state until it acknowledges the revocation of its partitions. The response contains the new
         // assignment without the partitions that must be revoked.
         result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
             .setGroupId(groupId)
@@ -1842,22 +1786,22 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(10)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1)),
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(0))
+                            .setPartitions(Collections.singletonList(0))
                     ))),
             result.response()
         );
 
         assertRecordsEquals(Collections.singletonList(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
+                .setState(MemberState.UNREVOKED_PARTITIONS)
                 .setMemberEpoch(10)
-                .setPreviousMemberEpoch(9)
-                .setTargetMemberEpoch(11)
+                .setPreviousMemberEpoch(10)
                 .setAssignedPartitions(mkAssignment(
                     mkTopicAssignment(fooTopicId, 0, 1),
                     mkTopicAssignment(barTopicId, 0)))
@@ -1868,11 +1812,11 @@ public class GroupMetadataManagerTest {
             result.records()
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.REVOKING, context.consumerGroupMemberState(groupId, memberId1));
+        assertEquals(MemberState.UNREVOKED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId1));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
-        // Member 2 heartbeats. It remains at epoch 10 but transitions to Revoking state until
-        // it acknowledges the revocation of its partitions. The response contains the new
+        // Member 2 heartbeats. It remains at epoch 10 but transitions to Unrevoked Partitions
+        // state until it acknowledges the revocation of its partitions. The response contains the new
         // assignment without the partitions that must be revoked.
         result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
             .setGroupId(groupId)
@@ -1885,34 +1829,32 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(10)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(3)),
+                            .setPartitions(Collections.singletonList(3)),
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(2))
+                            .setPartitions(Collections.singletonList(2))
                     ))),
             result.response()
         );
 
         assertRecordsEquals(Collections.singletonList(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId2)
+                .setState(MemberState.UNREVOKED_PARTITIONS)
                 .setMemberEpoch(10)
-                .setPreviousMemberEpoch(9)
-                .setTargetMemberEpoch(11)
+                .setPreviousMemberEpoch(10)
                 .setAssignedPartitions(mkAssignment(
                     mkTopicAssignment(fooTopicId, 3),
                     mkTopicAssignment(barTopicId, 2)))
                 .setPartitionsPendingRevocation(mkAssignment(
                     mkTopicAssignment(fooTopicId, 4, 5)))
-                .setPartitionsPendingAssignment(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 2)))
                 .build())),
             result.records()
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.REVOKING, context.consumerGroupMemberState(groupId, memberId2));
+        assertEquals(MemberState.UNREVOKED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId2));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         // Member 3 heartbeats. The response does not contain any assignment
@@ -1930,8 +1872,16 @@ public class GroupMetadataManagerTest {
             result.response()
         );
 
-        assertEquals(Collections.emptyList(), result.records());
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId3));
+        assertRecordsEquals(Collections.singletonList(
+            RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId3)
+                .setState(MemberState.UNRELEASED_PARTITIONS)
+                .setMemberEpoch(11)
+                .setPreviousMemberEpoch(11)
+                .build())),
+            result.records()
+        );
+
+        assertEquals(MemberState.UNRELEASED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId3));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         // Member 1 acknowledges the revocation of the partitions. It does so by providing the
@@ -1947,7 +1897,7 @@ public class GroupMetadataManagerTest {
                     .setPartitions(Arrays.asList(0, 1)),
                 new ConsumerGroupHeartbeatRequestData.TopicPartitions()
                     .setTopicId(barTopicId)
-                    .setPartitions(Arrays.asList(0))
+                    .setPartitions(Collections.singletonList(0))
             )));
 
         assertResponseEquals(
@@ -1956,22 +1906,22 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1)),
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(0))
+                            .setPartitions(Collections.singletonList(0))
                     ))),
             result.response()
         );
 
         assertRecordsEquals(Collections.singletonList(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
+                .setState(MemberState.STABLE)
                 .setMemberEpoch(11)
                 .setPreviousMemberEpoch(10)
-                .setTargetMemberEpoch(11)
                 .setAssignedPartitions(mkAssignment(
                     mkTopicAssignment(fooTopicId, 0, 1),
                     mkTopicAssignment(barTopicId, 0)))
@@ -1979,7 +1929,7 @@ public class GroupMetadataManagerTest {
             result.records()
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId1));
+        assertEquals(MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId1));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         // Member 2 heartbeats but without acknowledging the revocation yet. This is basically a no-op.
@@ -1997,11 +1947,11 @@ public class GroupMetadataManagerTest {
         );
 
         assertEquals(Collections.emptyList(), result.records());
-        assertEquals(ConsumerGroupMember.MemberState.REVOKING, context.consumerGroupMemberState(groupId, memberId2));
+        assertEquals(MemberState.UNREVOKED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId2));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         // Member 3 heartbeats. It receives the partitions revoked by member 1 but remains
-        // in Assigning state because it still waits on other partitions.
+        // in Unreleased Partitions state because it still waits on other partitions.
         result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
             .setGroupId(groupId)
             .setMemberId(memberId3)
@@ -2013,31 +1963,25 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(1))))
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(4, 5))))),
+                            .setPartitions(Collections.singletonList(1))))),
             result.response()
         );
 
         assertRecordsEquals(Collections.singletonList(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId3)
+                .setState(MemberState.UNRELEASED_PARTITIONS)
                 .setMemberEpoch(11)
                 .setPreviousMemberEpoch(11)
-                .setTargetMemberEpoch(11)
                 .setAssignedPartitions(mkAssignment(
                     mkTopicAssignment(barTopicId, 1)))
-                .setPartitionsPendingAssignment(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 4, 5)))
                 .build())),
             result.records()
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId3));
+        assertEquals(MemberState.UNRELEASED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId3));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         // Member 3 heartbeats. Member 2 has not acknowledged the revocation of its partition so
@@ -2056,7 +2000,7 @@ public class GroupMetadataManagerTest {
         );
 
         assertEquals(Collections.emptyList(), result.records());
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId3));
+        assertEquals(MemberState.UNRELEASED_PARTITIONS, context.consumerGroupMemberState(groupId, memberId3));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         // Member 2 acknowledges the revocation of the partitions. It does so by providing the
@@ -2069,10 +2013,10 @@ public class GroupMetadataManagerTest {
             .setTopicPartitions(Arrays.asList(
                 new ConsumerGroupHeartbeatRequestData.TopicPartitions()
                     .setTopicId(fooTopicId)
-                    .setPartitions(Arrays.asList(3)),
+                    .setPartitions(Collections.singletonList(3)),
                 new ConsumerGroupHeartbeatRequestData.TopicPartitions()
                     .setTopicId(barTopicId)
-                    .setPartitions(Arrays.asList(2))
+                    .setPartitions(Collections.singletonList(2))
             )));
 
         assertResponseEquals(
@@ -2081,22 +2025,22 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(2, 3)),
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(2))
+                            .setPartitions(Collections.singletonList(2))
                     ))),
             result.response()
         );
 
         assertRecordsEquals(Collections.singletonList(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId2)
+                .setState(MemberState.STABLE)
                 .setMemberEpoch(11)
                 .setPreviousMemberEpoch(10)
-                .setTargetMemberEpoch(11)
                 .setAssignedPartitions(mkAssignment(
                     mkTopicAssignment(fooTopicId, 2, 3),
                     mkTopicAssignment(barTopicId, 2)))
@@ -2104,14 +2048,19 @@ public class GroupMetadataManagerTest {
             result.records()
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId2));
+        assertEquals(MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId2));
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
-        // Member 3 heartbeats. It receives all its partitions and transitions to Stable.
+        // Member 3 heartbeats to acknowledge its current assignment. It receives all its partitions and
+        // transitions to Stable state.
         result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
             .setGroupId(groupId)
             .setMemberId(memberId3)
-            .setMemberEpoch(11));
+            .setMemberEpoch(11)
+            .setTopicPartitions(Collections.singletonList(
+                new ConsumerGroupHeartbeatRequestData.TopicPartitions()
+                    .setTopicId(barTopicId)
+                    .setPartitions(Collections.singletonList(1)))));
 
         assertResponseEquals(
             new ConsumerGroupHeartbeatResponseData()
@@ -2119,21 +2068,21 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Arrays.asList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(4, 5)),
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(barTopicId)
-                            .setPartitions(Arrays.asList(1))))),
+                            .setPartitions(Collections.singletonList(1))))),
             result.response()
         );
 
         assertRecordsEquals(Collections.singletonList(
             RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId3)
+                .setState(MemberState.STABLE)
                 .setMemberEpoch(11)
                 .setPreviousMemberEpoch(11)
-                .setTargetMemberEpoch(11)
                 .setAssignedPartitions(mkAssignment(
                     mkTopicAssignment(fooTopicId, 4, 5),
                     mkTopicAssignment(barTopicId, 1)))
@@ -2141,254 +2090,8 @@ public class GroupMetadataManagerTest {
             result.records()
         );
 
-        assertEquals(ConsumerGroupMember.MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId3));
+        assertEquals(MemberState.STABLE, context.consumerGroupMemberState(groupId, memberId3));
         assertEquals(ConsumerGroup.ConsumerGroupState.STABLE, context.consumerGroupState(groupId));
-    }
-
-    @Test
-    public void testReconciliationRestartsWhenNewTargetAssignmentIsInstalled() {
-        String groupId = "fooup";
-        // Use a static member id as it makes the test easier.
-        String memberId1 = Uuid.randomUuid().toString();
-        String memberId2 = Uuid.randomUuid().toString();
-        String memberId3 = Uuid.randomUuid().toString();
-
-        Uuid fooTopicId = Uuid.randomUuid();
-        String fooTopicName = "foo";
-
-        // Create a context with one consumer group containing one member.
-        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
-        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withAssignors(Collections.singletonList(assignor))
-            .withMetadataImage(new MetadataImageBuilder()
-                .addTopic(fooTopicId, fooTopicName, 6)
-                .build())
-            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
-                .withMember(new ConsumerGroupMember.Builder(memberId1)
-                    .setMemberEpoch(10)
-                    .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
-                    .setClientId("client")
-                    .setClientHost("localhost/127.0.0.1")
-                    .setRebalanceTimeoutMs(5000)
-                    .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
-                    .setServerAssignorName("range")
-                    .setAssignedPartitions(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 0, 1, 2)))
-                    .build())
-                .withAssignment(memberId1, mkAssignment(
-                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
-                .withAssignmentEpoch(10))
-            .build();
-
-        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result;
-
-        // Prepare new assignment for the group.
-        assignor.prepareGroupAssignment(new GroupAssignment(
-            new HashMap<String, MemberAssignment>() {
-                {
-                    put(memberId1, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 0, 1)
-                    )));
-                    put(memberId2, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 2)
-                    )));
-                }
-            }
-        ));
-
-        // Member 2 joins.
-        result = context.consumerGroupHeartbeat(
-            new ConsumerGroupHeartbeatRequestData()
-                .setGroupId(groupId)
-                .setMemberId(memberId2)
-                .setMemberEpoch(0)
-                .setRebalanceTimeoutMs(5000)
-                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
-                .setServerAssignor("range")
-                .setTopicPartitions(Collections.emptyList()));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId2)
-                .setMemberEpoch(11)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(2))
-                    ))),
-            result.response()
-        );
-
-        assertRecordEquals(
-            RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId2)
-                .setMemberEpoch(11)
-                .setPreviousMemberEpoch(0)
-                .setTargetMemberEpoch(11)
-                .setPartitionsPendingAssignment(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 2)))
-                .build()),
-            result.records().get(result.records().size() - 1)
-        );
-
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId2));
-
-        // Member 1 heartbeats and transitions to Revoking.
-        result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
-            .setGroupId(groupId)
-            .setMemberId(memberId1)
-            .setMemberEpoch(10));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId1)
-                .setMemberEpoch(10)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(0, 1))))),
-            result.response()
-        );
-
-        assertRecordsEquals(Collections.singletonList(
-            RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
-                .setMemberEpoch(10)
-                .setPreviousMemberEpoch(9)
-                .setTargetMemberEpoch(11)
-                .setAssignedPartitions(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 0, 1)))
-                .setPartitionsPendingRevocation(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 2)))
-                .build())),
-            result.records()
-        );
-
-        assertEquals(ConsumerGroupMember.MemberState.REVOKING, context.consumerGroupMemberState(groupId, memberId1));
-
-        // Prepare new assignment for the group.
-        assignor.prepareGroupAssignment(new GroupAssignment(
-            new HashMap<String, MemberAssignment>() {
-                {
-                    put(memberId1, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 0)
-                    )));
-                    put(memberId2, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 2)
-                    )));
-                    put(memberId3, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 1)
-                    )));
-                }
-            }
-        ));
-
-        // Member 3 joins.
-        result = context.consumerGroupHeartbeat(
-            new ConsumerGroupHeartbeatRequestData()
-                .setGroupId(groupId)
-                .setMemberId(memberId3)
-                .setMemberEpoch(0)
-                .setRebalanceTimeoutMs(5000)
-                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
-                .setServerAssignor("range")
-                .setTopicPartitions(Collections.emptyList()));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId3)
-                .setMemberEpoch(12)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(1))
-                    ))),
-            result.response()
-        );
-
-        assertRecordEquals(
-            RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId3)
-                .setMemberEpoch(12)
-                .setPreviousMemberEpoch(0)
-                .setTargetMemberEpoch(12)
-                .setPartitionsPendingAssignment(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 1)))
-                .build()),
-            result.records().get(result.records().size() - 1)
-        );
-
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId3));
-
-        // When member 1 heartbeats, it transitions to Revoke again but an updated state.
-        result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
-            .setGroupId(groupId)
-            .setMemberId(memberId1)
-            .setMemberEpoch(10));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId1)
-                .setMemberEpoch(10)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(0))))),
-            result.response()
-        );
-
-        assertRecordsEquals(Collections.singletonList(
-                RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
-                    .setMemberEpoch(10)
-                    .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(12)
-                    .setAssignedPartitions(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 0)))
-                    .setPartitionsPendingRevocation(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 1, 2)))
-                    .build())),
-            result.records()
-        );
-
-        assertEquals(ConsumerGroupMember.MemberState.REVOKING, context.consumerGroupMemberState(groupId, memberId1));
-
-        // When member 2 heartbeats, it transitions to Assign again but with an updated state.
-        result = context.consumerGroupHeartbeat(new ConsumerGroupHeartbeatRequestData()
-            .setGroupId(groupId)
-            .setMemberId(memberId2)
-            .setMemberEpoch(11));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId2)
-                .setMemberEpoch(12)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(2))))),
-            result.response()
-        );
-
-        assertRecordsEquals(Collections.singletonList(
-            RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId2)
-                .setMemberEpoch(12)
-                .setPreviousMemberEpoch(11)
-                .setTargetMemberEpoch(12)
-                .setPartitionsPendingAssignment(mkAssignment(
-                    mkTopicAssignment(fooTopicId, 2)))
-                .build())),
-            result.records()
-        );
-
-        assertEquals(ConsumerGroupMember.MemberState.ASSIGNING, context.consumerGroupMemberState(groupId, memberId2));
     }
 
     @Test
@@ -2415,9 +2118,9 @@ public class GroupMetadataManagerTest {
             .withConsumerGroupMaxSize(2)
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId1)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -2428,9 +2131,9 @@ public class GroupMetadataManagerTest {
                         mkTopicAssignment(barTopicId, 0, 1)))
                     .build())
                 .withMember(new ConsumerGroupMember.Builder(memberId2)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -2477,6 +2180,7 @@ public class GroupMetadataManagerTest {
         assertEquals(ConsumerGroup.ConsumerGroupState.EMPTY, context.consumerGroupState(groupId));
 
         context.replay(RecordHelpers.newMemberSubscriptionRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
+            .setState(MemberState.STABLE)
             .setSubscribedTopicNames(Collections.singletonList(fooTopicName))
             .build()));
         context.replay(RecordHelpers.newGroupEpochRecord(groupId, 11));
@@ -2490,19 +2194,18 @@ public class GroupMetadataManagerTest {
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         context.replay(RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
+            .setState(MemberState.UNREVOKED_PARTITIONS)
             .setMemberEpoch(11)
             .setPreviousMemberEpoch(10)
-            .setTargetMemberEpoch(11)
-            .setAssignedPartitions(mkAssignment(mkTopicAssignment(fooTopicId, 1, 2)))
-            .setPartitionsPendingAssignment(mkAssignment(mkTopicAssignment(fooTopicId, 3)))
+            .setAssignedPartitions(mkAssignment(mkTopicAssignment(fooTopicId, 1, 2, 3)))
             .build()));
 
         assertEquals(ConsumerGroup.ConsumerGroupState.RECONCILING, context.consumerGroupState(groupId));
 
         context.replay(RecordHelpers.newCurrentAssignmentRecord(groupId, new ConsumerGroupMember.Builder(memberId1)
+            .setState(MemberState.STABLE)
             .setMemberEpoch(11)
             .setPreviousMemberEpoch(10)
-            .setTargetMemberEpoch(11)
             .setAssignedPartitions(mkAssignment(mkTopicAssignment(fooTopicId, 1, 2, 3)))
             .build()));
 
@@ -2522,13 +2225,14 @@ public class GroupMetadataManagerTest {
 
         PartitionAssignor assignor = mock(PartitionAssignor.class);
         when(assignor.name()).thenReturn("range");
-        when(assignor.assign(any())).thenThrow(new PartitionAssignorException("Assignment failed."));
+        when(assignor.assign(any(), any())).thenThrow(new PartitionAssignorException("Assignment failed."));
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .withAssignors(Collections.singletonList(assignor))
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
                 .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
                 .build())
             .build();
 
@@ -2562,12 +2266,13 @@ public class GroupMetadataManagerTest {
             .withConsumerGroupMetadataRefreshIntervalMs(5 * 60 * 1000)
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
+                .addRacks()
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(10)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -2583,7 +2288,7 @@ public class GroupMetadataManagerTest {
                     {
                         // foo only has 3 partitions stored in the metadata but foo has
                         // 6 partitions the metadata image.
-                        put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 3));
+                        put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 3, mkMapOfPartitionRacks(3)));
                     }
                 }))
             .build();
@@ -2614,7 +2319,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1, 2, 3, 4, 5))
@@ -2623,9 +2328,9 @@ public class GroupMetadataManagerTest {
         );
 
         ConsumerGroupMember expectedMember = new ConsumerGroupMember.Builder(memberId)
+            .setState(MemberState.STABLE)
             .setMemberEpoch(11)
             .setPreviousMemberEpoch(10)
-            .setTargetMemberEpoch(11)
             .setClientId("client")
             .setClientHost("localhost/127.0.0.1")
             .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
@@ -2637,7 +2342,7 @@ public class GroupMetadataManagerTest {
         List<Record> expectedRecords = Arrays.asList(
             RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
                 {
-                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6));
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
                 }
             }),
             RecordHelpers.newGroupEpochRecord(groupId, 11),
@@ -2672,12 +2377,13 @@ public class GroupMetadataManagerTest {
             .withConsumerGroupMetadataRefreshIntervalMs(5 * 60 * 1000)
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
+                .addRacks()
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10)
                 .withMember(new ConsumerGroupMember.Builder(memberId)
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(10)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
                     .setRebalanceTimeoutMs(5000)
@@ -2693,7 +2399,7 @@ public class GroupMetadataManagerTest {
                     {
                         // foo only has 3 partitions stored in the metadata but foo has
                         // 6 partitions the metadata image.
-                        put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 3));
+                        put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 3, mkMapOfPartitionRacks(3)));
                     }
                 }))
             .build();
@@ -2742,7 +2448,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(11)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1, 2, 3, 4, 5))
@@ -2751,9 +2457,9 @@ public class GroupMetadataManagerTest {
         );
 
         ConsumerGroupMember expectedMember = new ConsumerGroupMember.Builder(memberId)
+            .setState(MemberState.STABLE)
             .setMemberEpoch(11)
             .setPreviousMemberEpoch(10)
-            .setTargetMemberEpoch(11)
             .setClientId("client")
             .setClientHost("localhost/127.0.0.1")
             .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
@@ -2765,7 +2471,7 @@ public class GroupMetadataManagerTest {
         List<Record> expectedRecords = Arrays.asList(
             RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, new HashMap<String, TopicMetadata>() {
                 {
-                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6));
+                    put(fooTopicName, new TopicMetadata(fooTopicId, fooTopicName, 6, mkMapOfPartitionRacks(6)));
                 }
             }),
             RecordHelpers.newGroupEpochRecord(groupId, 11),
@@ -2859,7 +2565,7 @@ public class GroupMetadataManagerTest {
         // M2 in group 2 subscribes to foo.
         context.replay(RecordHelpers.newMemberSubscriptionRecord(groupId2,
             new ConsumerGroupMember.Builder("group2-m2")
-                .setSubscribedTopicNames(Arrays.asList("foo"))
+                .setSubscribedTopicNames(Collections.singletonList("foo"))
                 .build()));
 
         assertEquals(mkSet(groupId2), context.groupMetadataManager.groupsSubscribedToTopic("foo"));
@@ -2921,19 +2627,19 @@ public class GroupMetadataManagerTest {
         // M1 in group 3 subscribes to d.
         context.replay(RecordHelpers.newMemberSubscriptionRecord("group3",
             new ConsumerGroupMember.Builder("group3-m1")
-                .setSubscribedTopicNames(Arrays.asList("d"))
+                .setSubscribedTopicNames(Collections.singletonList("d"))
                 .build()));
 
         // M1 in group 4 subscribes to e.
         context.replay(RecordHelpers.newMemberSubscriptionRecord("group4",
             new ConsumerGroupMember.Builder("group4-m1")
-                .setSubscribedTopicNames(Arrays.asList("e"))
+                .setSubscribedTopicNames(Collections.singletonList("e"))
                 .build()));
 
         // M1 in group 5 subscribes to f.
         context.replay(RecordHelpers.newMemberSubscriptionRecord("group5",
             new ConsumerGroupMember.Builder("group5-m1")
-                .setSubscribedTopicNames(Arrays.asList("f"))
+                .setSubscribedTopicNames(Collections.singletonList("f"))
                 .build()));
 
         // Ensures that all refresh flags are set to the future.
@@ -2979,7 +2685,7 @@ public class GroupMetadataManagerTest {
             assertTrue(group.hasMetadataExpired(context.time.milliseconds()));
         });
 
-        Arrays.asList("group5").forEach(groupId -> {
+        Collections.singletonList("group5").forEach(groupId -> {
             ConsumerGroup group = context.groupMetadataManager.getOrMaybeCreateConsumerGroup(groupId, false);
             assertFalse(group.hasMetadataExpired(context.time.milliseconds()));
         });
@@ -3002,6 +2708,7 @@ public class GroupMetadataManagerTest {
             .withAssignors(Collections.singletonList(assignor))
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
+                .addRacks()
                 .build())
             .build();
 
@@ -3054,12 +2761,12 @@ public class GroupMetadataManagerTest {
             new ConsumerGroupHeartbeatRequestData()
                 .setGroupId(groupId)
                 .setMemberId(memberId)
-                .setMemberEpoch(-1));
-        assertEquals(-1, result.response().memberEpoch());
+                .setMemberEpoch(LEAVE_GROUP_MEMBER_EPOCH));
+        assertEquals(LEAVE_GROUP_MEMBER_EPOCH, result.response().memberEpoch());
 
         // Verify that there are no timers.
         context.assertNoSessionTimeout(groupId, memberId);
-        context.assertNoRevocationTimeout(groupId, memberId);
+        context.assertNoRebalanceTimeout(groupId, memberId);
     }
 
     @Test
@@ -3076,6 +2783,7 @@ public class GroupMetadataManagerTest {
             .withAssignors(Collections.singletonList(assignor))
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 6)
+                .addRacks()
                 .build())
             .build();
 
@@ -3122,16 +2830,96 @@ public class GroupMetadataManagerTest {
 
         // Verify that there are no timers.
         context.assertNoSessionTimeout(groupId, memberId);
-        context.assertNoRevocationTimeout(groupId, memberId);
+        context.assertNoRebalanceTimeout(groupId, memberId);
     }
 
     @Test
-    public void testRevocationTimeoutLifecycle() {
+    public void testSessionTimeoutExpirationStaticMember() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addRacks()
+                .build())
+            .build();
+
+        assignor.prepareGroupAssignment(new GroupAssignment(
+            Collections.singletonMap(memberId, new MemberAssignment(mkAssignment(
+                mkTopicAssignment(fooTopicId, 0, 1, 2, 3, 4, 5)
+            )))
+        ));
+
+        // Session timer is scheduled on first heartbeat.
+        CoordinatorResult<ConsumerGroupHeartbeatResponseData, Record> result =
+            context.consumerGroupHeartbeat(
+                new ConsumerGroupHeartbeatRequestData()
+                    .setGroupId(groupId)
+                    .setMemberId(memberId)
+                    .setInstanceId(memberId)
+                    .setMemberEpoch(0)
+                    .setRebalanceTimeoutMs(90000)
+                    .setSubscribedTopicNames(Collections.singletonList("foo"))
+                    .setTopicPartitions(Collections.emptyList()));
+        assertEquals(1, result.response().memberEpoch());
+
+        // Verify that there is a session time.
+        context.assertSessionTimeout(groupId, memberId, 45000);
+
+        // Static member sends a temporary leave group request
+        result = context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId)
+                .setInstanceId(memberId)
+                .setMemberEpoch(LEAVE_GROUP_STATIC_MEMBER_EPOCH)
+                .setRebalanceTimeoutMs(90000)
+                .setSubscribedTopicNames(Collections.singletonList("foo"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        assertEquals(-2, result.response().memberEpoch());
+
+        // Verify that there is still a session time.
+        context.assertSessionTimeout(groupId, memberId, 45000);
+
+        // Advance time past the session timeout. No static member joined back as a replacement
+        List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(45000 + 1);
+
+        // Verify the expired timeout.
+        assertEquals(
+            Collections.singletonList(new ExpiredTimeout<Void, Record>(
+                consumerGroupSessionTimeoutKey(groupId, memberId),
+                new CoordinatorResult<>(
+                    Arrays.asList(
+                        RecordHelpers.newCurrentAssignmentTombstoneRecord(groupId, memberId),
+                        RecordHelpers.newTargetAssignmentTombstoneRecord(groupId, memberId),
+                        RecordHelpers.newMemberSubscriptionTombstoneRecord(groupId, memberId),
+                        RecordHelpers.newGroupSubscriptionMetadataRecord(groupId, Collections.emptyMap()),
+                        RecordHelpers.newGroupEpochRecord(groupId, 2)
+                    )
+                )
+            )),
+            timeouts
+        );
+
+        // Verify that there are no timers.
+        context.assertNoSessionTimeout(groupId, memberId);
+        context.assertNoRebalanceTimeout(groupId, memberId);
+    }
+
+    @Test
+    public void testRebalanceTimeoutLifecycle() {
         String groupId = "fooup";
         // Use a static member id as it makes the test easier.
         String memberId1 = Uuid.randomUuid().toString();
         String memberId2 = Uuid.randomUuid().toString();
-        String memberId3 = Uuid.randomUuid().toString();
 
         Uuid fooTopicId = Uuid.randomUuid();
         String fooTopicName = "foo";
@@ -3141,6 +2929,7 @@ public class GroupMetadataManagerTest {
             .withAssignors(Collections.singletonList(assignor))
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 3)
+                .addRacks()
                 .build())
             .build();
 
@@ -3171,7 +2960,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1, 2))))),
@@ -3212,11 +3001,7 @@ public class GroupMetadataManagerTest {
                 .setMemberId(memberId2)
                 .setMemberEpoch(2)
                 .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(2))))),
+                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()),
             result.response()
         );
 
@@ -3225,7 +3010,7 @@ public class GroupMetadataManagerTest {
             context.sleep(result.response().heartbeatIntervalMs())
         );
 
-        // Member 1 heartbeats and transitions to revoking. The revocation timeout
+        // Member 1 heartbeats and transitions to unrevoked partitions. The rebalance timeout
         // is scheduled.
         result = context.consumerGroupHeartbeat(
             new ConsumerGroupHeartbeatRequestData()
@@ -3241,93 +3026,17 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1))))),
             result.response()
         );
 
-        // Verify that there is a revocation timeout.
-        context.assertRevocationTimeout(groupId, memberId1, 12000);
-
-        assertEquals(
-            Collections.emptyList(),
-            context.sleep(result.response().heartbeatIntervalMs())
-        );
-
-        // Prepare next assignment.
-        assignor.prepareGroupAssignment(new GroupAssignment(
-            new HashMap<String, MemberAssignment>() {
-                {
-                    put(memberId1, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 0)
-                    )));
-                    put(memberId2, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 2)
-                    )));
-                    put(memberId3, new MemberAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 1)
-                    )));
-                }
-            }
-        ));
-
-        // Member 3 joins the group.
-        result = context.consumerGroupHeartbeat(
-            new ConsumerGroupHeartbeatRequestData()
-                .setGroupId(groupId)
-                .setMemberId(memberId3)
-                .setMemberEpoch(0)
-                .setRebalanceTimeoutMs(90000)
-                .setSubscribedTopicNames(Collections.singletonList("foo"))
-                .setTopicPartitions(Collections.emptyList()));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId3)
-                .setMemberEpoch(3)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(1))))),
-            result.response()
-        );
-
-        assertEquals(
-            Collections.emptyList(),
-            context.sleep(result.response().heartbeatIntervalMs())
-        );
-
-        // Member 1 heartbeats and re-transitions to revoking. The revocation timeout
-        // is re-scheduled.
-        result = context.consumerGroupHeartbeat(
-            new ConsumerGroupHeartbeatRequestData()
-                .setGroupId(groupId)
-                .setMemberId(memberId1)
-                .setMemberEpoch(1)
-                .setRebalanceTimeoutMs(90000)
-                .setSubscribedTopicNames(Collections.singletonList("foo")));
-
-        assertResponseEquals(
-            new ConsumerGroupHeartbeatResponseData()
-                .setMemberId(memberId1)
-                .setMemberEpoch(1)
-                .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(0))))),
-            result.response()
-        );
-
         // Verify that there is a revocation timeout. Keep a reference
         // to the timeout for later.
         ScheduledTimeout<Void, Record> scheduledTimeout =
-            context.assertRevocationTimeout(groupId, memberId1, 90000);
+            context.assertRebalanceTimeout(groupId, memberId1, 12000);
 
         assertEquals(
             Collections.emptyList(),
@@ -3342,23 +3051,23 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setTopicPartitions(Collections.singletonList(new ConsumerGroupHeartbeatRequestData.TopicPartitions()
                     .setTopicId(fooTopicId)
-                    .setPartitions(Collections.singletonList(0)))));
+                    .setPartitions(Arrays.asList(0, 1)))));
 
         assertResponseEquals(
             new ConsumerGroupHeartbeatResponseData()
                 .setMemberId(memberId1)
-                .setMemberEpoch(3)
+                .setMemberEpoch(2)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(0))))),
+                            .setPartitions(Arrays.asList(0, 1))))),
             result.response()
         );
 
         // Verify that there is not revocation timeout.
-        context.assertNoRevocationTimeout(groupId, memberId1);
+        context.assertNoRebalanceTimeout(groupId, memberId1);
 
         // Execute the scheduled revocation timeout captured earlier to simulate a
         // stale timeout. This should be a no-op.
@@ -3366,7 +3075,7 @@ public class GroupMetadataManagerTest {
     }
 
     @Test
-    public void testRevocationTimeoutExpiration() {
+    public void testRebalanceTimeoutExpiration() {
         String groupId = "fooup";
         // Use a static member id as it makes the test easier.
         String memberId1 = Uuid.randomUuid().toString();
@@ -3380,6 +3089,7 @@ public class GroupMetadataManagerTest {
             .withAssignors(Collections.singletonList(assignor))
             .withMetadataImage(new MetadataImageBuilder()
                 .addTopic(fooTopicId, fooTopicName, 3)
+                .addRacks()
                 .build())
             .build();
 
@@ -3410,7 +3120,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1, 2))))),
@@ -3451,11 +3161,7 @@ public class GroupMetadataManagerTest {
                 .setMemberId(memberId2)
                 .setMemberEpoch(2)
                 .setHeartbeatIntervalMs(5000)
-                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setPendingTopicPartitions(Arrays.asList(
-                        new ConsumerGroupHeartbeatResponseData.TopicPartitions()
-                            .setTopicId(fooTopicId)
-                            .setPartitions(Arrays.asList(2))))),
+                .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()),
             result.response()
         );
 
@@ -3478,7 +3184,7 @@ public class GroupMetadataManagerTest {
                 .setMemberEpoch(1)
                 .setHeartbeatIntervalMs(5000)
                 .setAssignment(new ConsumerGroupHeartbeatResponseData.Assignment()
-                    .setAssignedTopicPartitions(Arrays.asList(
+                    .setTopicPartitions(Collections.singletonList(
                         new ConsumerGroupHeartbeatResponseData.TopicPartitions()
                             .setTopicId(fooTopicId)
                             .setPartitions(Arrays.asList(0, 1))))),
@@ -3491,7 +3197,7 @@ public class GroupMetadataManagerTest {
         // Verify the expired timeout.
         assertEquals(
             Collections.singletonList(new ExpiredTimeout<Void, Record>(
-                consumerGroupRevocationTimeoutKey(groupId, memberId1),
+                consumerGroupRebalanceTimeoutKey(groupId, memberId1),
                 new CoordinatorResult<>(
                     Arrays.asList(
                         RecordHelpers.newCurrentAssignmentTombstoneRecord(groupId, memberId1),
@@ -3506,7 +3212,7 @@ public class GroupMetadataManagerTest {
 
         // Verify that there are no timers.
         context.assertNoSessionTimeout(groupId, memberId1);
-        context.assertNoRevocationTimeout(groupId, memberId1);
+        context.assertNoRebalanceTimeout(groupId, memberId1);
     }
 
     @Test
@@ -3524,12 +3230,12 @@ public class GroupMetadataManagerTest {
                 .build())
             .withConsumerGroup(new ConsumerGroupBuilder("foo", 10)
                 .withMember(new ConsumerGroupMember.Builder("foo-1")
+                    .setState(MemberState.UNREVOKED_PARTITIONS)
                     .setMemberEpoch(9)
                     .setPreviousMemberEpoch(9)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
-                    .setSubscribedTopicNames(Arrays.asList("foo"))
+                    .setSubscribedTopicNames(Collections.singletonList("foo"))
                     .setServerAssignorName("range")
                     .setAssignedPartitions(mkAssignment(
                         mkTopicAssignment(fooTopicId, 0, 1, 2)))
@@ -3537,19 +3243,15 @@ public class GroupMetadataManagerTest {
                         mkTopicAssignment(fooTopicId, 3, 4, 5)))
                     .build())
                 .withMember(new ConsumerGroupMember.Builder("foo-2")
+                    .setState(MemberState.STABLE)
                     .setMemberEpoch(10)
                     .setPreviousMemberEpoch(10)
-                    .setTargetMemberEpoch(10)
                     .setClientId("client")
                     .setClientHost("localhost/127.0.0.1")
-                    .setSubscribedTopicNames(Arrays.asList("foo"))
+                    .setSubscribedTopicNames(Collections.singletonList("foo"))
                     .setServerAssignorName("range")
-                    .setPartitionsPendingAssignment(mkAssignment(
-                        mkTopicAssignment(fooTopicId, 3, 4, 5)))
                     .build())
                 .withAssignment("foo-1", mkAssignment(
-                    mkTopicAssignment(fooTopicId, 0, 1, 2)))
-                .withAssignment("foo-2", mkAssignment(
                     mkTopicAssignment(fooTopicId, 3, 4, 5)))
                 .withAssignmentEpoch(10))
             .build();
@@ -3563,31 +3265,51 @@ public class GroupMetadataManagerTest {
         assertNotNull(context.timer.timeout(consumerGroupSessionTimeoutKey("foo", "foo-2")));
 
         // foo-1 should also have a revocation timeout in place.
-        assertNotNull(context.timer.timeout(consumerGroupRevocationTimeoutKey("foo", "foo-1")));
+        assertNotNull(context.timer.timeout(consumerGroupRebalanceTimeoutKey("foo", "foo-1")));
     }
 
     @Test
-    public void testGenerateRecordsOnNewGroup() throws Exception {
+    public void testGenerateRecordsOnNewClassicGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture, true);
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), responseFuture.get().errorCode());
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true);
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), joinResult.joinFuture.get().errorCode());
 
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         assertEquals(
-            Collections.singletonList(RecordHelpers.newEmptyGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newEmptyGroupMetadataRecord(group, MetadataVersion.latestTesting())),
+            joinResult.records
         );
+    }
+
+    @Test
+    public void testGenerateRecordsOnNewClassicGroupFailureTransformsError() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(UNKNOWN_MEMBER_ID)
+            .withGroupInstanceId("group-instance-id")
+            .withDefaultProtocolTypeAndProtocols()
+            .build();
+
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true);
+        assertFalse(joinResult.joinFuture.isDone());
+
+        // Simulate a failed write to the log.
+        joinResult.appendFuture.completeExceptionally(new NotLeaderOrFollowerException());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NOT_COORDINATOR.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @ParameterizedTest
@@ -3599,7 +3321,7 @@ public class GroupMetadataManagerTest {
         byte[] subscription = ConsumerProtocol.serializeSubscription(new ConsumerPartitionAssignor.Subscription(
             Collections.singletonList("foo"))).array();
         List<GroupMetadataValue.MemberMetadata> members = new ArrayList<>();
-        List<GenericGroupMember> expectedMembers = new ArrayList<>();
+        List<ClassicGroupMember> expectedMembers = new ArrayList<>();
         JoinGroupRequestProtocolCollection expectedProtocols = new JoinGroupRequestProtocolCollection(0);
         expectedProtocols.add(new JoinGroupRequestProtocol()
             .setName("range")
@@ -3617,7 +3339,7 @@ public class GroupMetadataManagerTest {
                 .setRebalanceTimeout(useDefaultRebalanceTimeout ? -1 : 9000)
             );
 
-            expectedMembers.add(new GenericGroupMember(
+            expectedMembers.add(new ClassicGroupMember(
                 "member-" + i,
                 Optional.of("group-instance-id-" + i),
                 "client-" + i,
@@ -3630,7 +3352,7 @@ public class GroupMetadataManagerTest {
             ));
         });
 
-        Record groupMetadataRecord = newGroupMetadataRecord("group-id",
+        Record groupMetadataRecord = GroupMetadataManagerTestContext.newGroupMetadataRecord("group-id",
             new GroupMetadataValue()
                 .setMembers(members)
                 .setGeneration(1)
@@ -3638,16 +3360,21 @@ public class GroupMetadataManagerTest {
                 .setProtocolType("consumer")
                 .setProtocol("range")
                 .setCurrentStateTimestamp(context.time.milliseconds()),
-            MetadataVersion.latest());
+            MetadataVersion.latestTesting());
 
         context.replay(groupMetadataRecord);
-        GenericGroup group = context.groupMetadataManager.getOrMaybeCreateGenericGroup("group-id", false);
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
-        GenericGroup expectedGroup = new GenericGroup(
+        ClassicGroup expectedGroup = new ClassicGroup(
             new LogContext(),
             "group-id",
             STABLE,
             context.time,
+            new GroupCoordinatorMetricsShard(
+                context.snapshotRegistry,
+                Collections.emptyMap(),
+                new TopicPartition("__consumer_offsets", 0)
+            ),
             1,
             Optional.of("consumer"),
             Optional.of("range"),
@@ -3663,21 +3390,21 @@ public class GroupMetadataManagerTest {
         assertEquals(expectedGroup.leaderOrNull(), group.leaderOrNull());
         assertEquals(expectedGroup.currentState(), group.currentState());
         assertEquals(expectedGroup.currentStateTimestampOrDefault(), group.currentStateTimestampOrDefault());
-        assertEquals(expectedGroup.currentGenericGroupMembers(), group.currentGenericGroupMembers());
+        assertEquals(expectedGroup.currentClassicGroupMembers(), group.currentClassicGroupMembers());
     }
 
     @Test
     public void testOnLoadedExceedGroupMaxSizeTriggersRebalance() {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(1)
+            .withClassicGroupMaxSize(1)
             .build();
 
         byte[] subscription = ConsumerProtocol.serializeSubscription(new ConsumerPartitionAssignor.Subscription(
             Collections.singletonList("foo"))).array();
         List<GroupMetadataValue.MemberMetadata> members = new ArrayList<>();
 
-        IntStream.range(0, 2).forEach(i -> {
-            members.add(new GroupMetadataValue.MemberMetadata()
+        IntStream.range(0, 2).forEach(i -> members.add(
+            new GroupMetadataValue.MemberMetadata()
                 .setMemberId("member-" + i)
                 .setGroupInstanceId("group-instance-id-" + i)
                 .setSubscription(subscription)
@@ -3686,10 +3413,9 @@ public class GroupMetadataManagerTest {
                 .setClientHost("host-" + i)
                 .setSessionTimeout(4000)
                 .setRebalanceTimeout(9000)
-            );
-        });
+        ));
 
-        Record groupMetadataRecord = newGroupMetadataRecord("group-id",
+        Record groupMetadataRecord = GroupMetadataManagerTestContext.newGroupMetadataRecord("group-id",
             new GroupMetadataValue()
                 .setMembers(members)
                 .setGeneration(1)
@@ -3697,18 +3423,18 @@ public class GroupMetadataManagerTest {
                 .setProtocolType("consumer")
                 .setProtocol("range")
                 .setCurrentStateTimestamp(context.time.milliseconds()),
-            MetadataVersion.latest());
+            MetadataVersion.latestTesting());
 
         context.replay(groupMetadataRecord);
         context.groupMetadataManager.onLoaded();
-        GenericGroup group = context.groupMetadataManager.getOrMaybeCreateGenericGroup("group-id", false);
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         assertTrue(group.isInState(PREPARING_REBALANCE));
         assertEquals(2, group.size());
     }
 
     @Test
-    public void testOnLoadedSchedulesGenericGroupMemberHeartbeats() {
+    public void testOnLoadedSchedulesClassicGroupMemberHeartbeats() {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
 
@@ -3716,8 +3442,8 @@ public class GroupMetadataManagerTest {
             Collections.singletonList("foo"))).array();
         List<GroupMetadataValue.MemberMetadata> members = new ArrayList<>();
 
-        IntStream.range(0, 2).forEach(i -> {
-            members.add(new GroupMetadataValue.MemberMetadata()
+        IntStream.range(0, 2).forEach(i -> members.add(
+            new GroupMetadataValue.MemberMetadata()
                 .setMemberId("member-" + i)
                 .setGroupInstanceId("group-instance-id-" + i)
                 .setSubscription(subscription)
@@ -3726,10 +3452,10 @@ public class GroupMetadataManagerTest {
                 .setClientHost("host-" + i)
                 .setSessionTimeout(4000)
                 .setRebalanceTimeout(9000)
-            );
-        });
+            )
+        );
 
-        Record groupMetadataRecord = newGroupMetadataRecord("group-id",
+        Record groupMetadataRecord = GroupMetadataManagerTestContext.newGroupMetadataRecord("group-id",
             new GroupMetadataValue()
                 .setMembers(members)
                 .setGeneration(1)
@@ -3737,14 +3463,14 @@ public class GroupMetadataManagerTest {
                 .setProtocolType("consumer")
                 .setProtocol("range")
                 .setCurrentStateTimestamp(context.time.milliseconds()),
-            MetadataVersion.latest());
+            MetadataVersion.latestTesting());
 
         context.replay(groupMetadataRecord);
         context.groupMetadataManager.onLoaded();
 
         IntStream.range(0, 2).forEach(i -> {
             ScheduledTimeout<Void, Record> timeout = context.timer.timeout(
-                genericGroupHeartbeatKey("group-id", "member-1"));
+                classicGroupHeartbeatKey("group-id", "member-1"));
 
             assertNotNull(timeout);
             assertEquals(context.time.milliseconds() + 4000, timeout.deadlineMs);
@@ -3754,11 +3480,11 @@ public class GroupMetadataManagerTest {
     @Test
     public void testJoinGroupShouldReceiveErrorIfGroupOverMaxSize() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(10)
+            .withClassicGroupMaxSize(10)
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -3766,17 +3492,15 @@ public class GroupMetadataManagerTest {
             .build();
 
         IntStream.range(0, 10).forEach(i -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-            assertFalse(responseFuture.isDone());
-            assertTrue(result.records().isEmpty());
+            GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
+            assertFalse(joinResult.joinFuture.isDone());
+            assertTrue(joinResult.records.isEmpty());
         });
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.GROUP_MAX_SIZE_REACHED.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.GROUP_MAX_SIZE_REACHED.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
@@ -3784,13 +3508,13 @@ public class GroupMetadataManagerTest {
         boolean requiredKnownMemberId = true;
         int groupMaxSize = 10;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(groupMaxSize)
-            .withGenericGroupInitialRebalanceDelayMs(50)
+            .withClassicGroupMaxSize(groupMaxSize)
+            .withClassicGroupInitialRebalanceDelayMs(50)
             .build();
 
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -3798,23 +3522,12 @@ public class GroupMetadataManagerTest {
 
         // First round of join requests. Generate member ids. All requests will be accepted
         // as the group is still Empty.
-        List<CompletableFuture<JoinGroupResponseData>> firstRoundFutures = new ArrayList<>();
-        IntStream.range(0, groupMaxSize + 1).forEach(i -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            firstRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture, requiredKnownMemberId);
-            assertTrue(responseFuture.isDone());
-            JoinGroupResponseData response = null;
-            try {
-                response = responseFuture.get();
-            } catch (Exception ignored) {
-            }
-            assertNotNull(response);
-            assertEquals(Errors.MEMBER_ID_REQUIRED.code(), response.errorCode());
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> firstRoundJoinResults = IntStream.range(0, groupMaxSize + 1).mapToObj(i -> context.sendClassicGroupJoin(
+            request,
+            requiredKnownMemberId
+        )).collect(Collectors.toList());
 
-        List<String> memberIds = verifyGenericGroupJoinResponses(firstRoundFutures, 0, Errors.MEMBER_ID_REQUIRED);
+        List<String> memberIds = verifyClassicGroupJoinResponses(firstRoundJoinResults, 0, Errors.MEMBER_ID_REQUIRED);
         assertEquals(groupMaxSize + 1, memberIds.size());
         assertEquals(0, group.size());
         assertTrue(group.isInState(EMPTY));
@@ -3822,45 +3535,31 @@ public class GroupMetadataManagerTest {
 
         // Second round of join requests with the generated member ids.
         // One of them will fail, reaching group max size.
-        List<CompletableFuture<JoinGroupResponseData>> secondRoundFutures = new ArrayList<>();
-        memberIds.forEach(memberId -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            secondRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-                request.setMemberId(memberId),
-                responseFuture,
-                requiredKnownMemberId
-            );
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> secondRoundJoinResults = memberIds.stream().map(memberId -> context.sendClassicGroupJoin(
+            request.setMemberId(memberId),
+            requiredKnownMemberId
+        )).collect(Collectors.toList());
 
         // Advance clock by group initial rebalance delay to complete first inital delayed join.
         // This will extend the initial rebalance as new members have joined.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
         // Advance clock by group initial rebalance delay to complete second inital delayed join.
         // Since there are no new members that joined since the previous delayed join,
         // the join group phase will complete.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
 
-        verifyGenericGroupJoinResponses(secondRoundFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        verifyClassicGroupJoinResponses(secondRoundJoinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
         assertEquals(groupMaxSize, group.size());
         assertEquals(0, group.numPendingJoinMembers());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
 
         // Members that were accepted can rejoin while others are rejected in CompletingRebalance state.
-        List<CompletableFuture<JoinGroupResponseData>> thirdRoundFutures = new ArrayList<>();
-        memberIds.forEach(memberId -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            thirdRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-                request.setMemberId(memberId),
-                responseFuture,
-                requiredKnownMemberId
-            );
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> thirdRoundJoinResults = memberIds.stream().map(memberId -> context.sendClassicGroupJoin(
+            request.setMemberId(memberId),
+            requiredKnownMemberId
+        )).collect(Collectors.toList());
 
-        verifyGenericGroupJoinResponses(thirdRoundFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        verifyClassicGroupJoinResponses(thirdRoundJoinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
     }
 
     @Test
@@ -3868,26 +3567,23 @@ public class GroupMetadataManagerTest {
         boolean requiredKnownMemberId = false;
         int groupMaxSize = 10;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(groupMaxSize)
-            .withGenericGroupInitialRebalanceDelayMs(50)
+            .withClassicGroupMaxSize(groupMaxSize)
+            .withClassicGroupInitialRebalanceDelayMs(50)
             .build();
 
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
         // First round of join requests. This will trigger a rebalance.
-        List<CompletableFuture<JoinGroupResponseData>> firstRoundFutures = new ArrayList<>();
-        IntStream.range(0, groupMaxSize + 1).forEach(i -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            firstRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture, requiredKnownMemberId);
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> firstRoundJoinResults = IntStream.range(0, groupMaxSize + 1).mapToObj(i -> context.sendClassicGroupJoin(
+            request,
+            requiredKnownMemberId
+        )).collect(Collectors.toList());
 
         assertEquals(groupMaxSize, group.size());
         assertEquals(groupMaxSize, group.numAwaitingJoinResponse());
@@ -3895,28 +3591,21 @@ public class GroupMetadataManagerTest {
 
         // Advance clock by group initial rebalance delay to complete first inital delayed join.
         // This will extend the initial rebalance as new members have joined.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
         // Advance clock by group initial rebalance delay to complete second inital delayed join.
         // Since there are no new members that joined since the previous delayed join,
         // we will complete the rebalance.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
 
-        List<String> memberIds = verifyGenericGroupJoinResponses(firstRoundFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        List<String> memberIds = verifyClassicGroupJoinResponses(firstRoundJoinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
 
         // Members that were accepted can rejoin while others are rejected in CompletingRebalance state.
-        List<CompletableFuture<JoinGroupResponseData>> secondRoundFutures = new ArrayList<>();
-        memberIds.forEach(memberId -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            secondRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-                request.setMemberId(memberId),
-                responseFuture,
-                requiredKnownMemberId
-            );
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> secondRoundJoinResults = memberIds.stream().map(memberId -> context.sendClassicGroupJoin(
+            request.setMemberId(memberId),
+            requiredKnownMemberId
+        )).collect(Collectors.toList());
 
-        verifyGenericGroupJoinResponses(secondRoundFutures, 10, Errors.GROUP_MAX_SIZE_REACHED);
+        verifyClassicGroupJoinResponses(secondRoundJoinResults, 10, Errors.GROUP_MAX_SIZE_REACHED);
         assertEquals(groupMaxSize, group.size());
         assertEquals(0, group.numAwaitingJoinResponse());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
@@ -3931,26 +3620,22 @@ public class GroupMetadataManagerTest {
             .collect(Collectors.toList());
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(groupMaxSize)
-            .withGenericGroupInitialRebalanceDelayMs(50)
+            .withClassicGroupMaxSize(groupMaxSize)
+            .withClassicGroupInitialRebalanceDelayMs(50)
             .build();
 
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
         // First round of join requests. This will trigger a rebalance.
-        List<CompletableFuture<JoinGroupResponseData>> firstRoundFutures = new ArrayList<>();
-        groupInstanceIds.forEach(instanceId -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            firstRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request.setGroupInstanceId(instanceId), responseFuture);
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> firstRoundJoinResults = groupInstanceIds.stream()
+                                                                                                 .map(instanceId -> context.sendClassicGroupJoin(request.setGroupInstanceId(instanceId)))
+                                                                                                 .collect(Collectors.toList());
 
         assertEquals(groupMaxSize, group.size());
         assertEquals(groupMaxSize, group.numAwaitingJoinResponse());
@@ -3958,29 +3643,23 @@ public class GroupMetadataManagerTest {
 
         // Advance clock by group initial rebalance delay to complete first inital delayed join.
         // This will extend the initial rebalance as new members have joined.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
         // Advance clock by group initial rebalance delay to complete second inital delayed join.
         // Since there are no new members that joined since the previous delayed join,
         // we will complete the rebalance.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
 
-        List<String> memberIds = verifyGenericGroupJoinResponses(firstRoundFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        List<String> memberIds = verifyClassicGroupJoinResponses(firstRoundJoinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
 
         // Members which were accepted can rejoin, others are rejected, while
         // completing rebalance
-        List<CompletableFuture<JoinGroupResponseData>> secondRoundFutures = new ArrayList<>();
-        IntStream.range(0, groupMaxSize + 1).forEach(i -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            secondRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-                request.setMemberId(memberIds.get(i))
-                    .setGroupInstanceId(groupInstanceIds.get(i)),
-                responseFuture
-            );
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> secondRoundJoinResults =  IntStream.range(0, groupMaxSize + 1).mapToObj(i -> context.sendClassicGroupJoin(
+            request
+                .setMemberId(memberIds.get(i))
+                .setGroupInstanceId(groupInstanceIds.get(i))
+        )).collect(Collectors.toList());
 
-        verifyGenericGroupJoinResponses(secondRoundFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        verifyClassicGroupJoinResponses(secondRoundJoinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
         assertEquals(groupMaxSize, group.size());
         assertEquals(0, group.numAwaitingJoinResponse());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
@@ -3991,48 +3670,38 @@ public class GroupMetadataManagerTest {
         boolean requiredKnownMemberId = true;
         int groupMaxSize = 10;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(groupMaxSize)
-            .withGenericGroupInitialRebalanceDelayMs(50)
+            .withClassicGroupMaxSize(groupMaxSize)
+            .withClassicGroupInitialRebalanceDelayMs(50)
             .build();
 
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
         // First round of join requests. Generate member ids.
-        List<CompletableFuture<JoinGroupResponseData>> firstRoundFutures = new ArrayList<>();
-        IntStream.range(0, groupMaxSize + 1).forEach(i -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            firstRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-                request,
-                responseFuture,
-                requiredKnownMemberId
-            );
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> firstRoundJoinResults =  IntStream.range(0, groupMaxSize + 1)
+                                                                                           .mapToObj(__ -> context.sendClassicGroupJoin(request, requiredKnownMemberId))
+                                                                                           .collect(Collectors.toList());
 
         assertEquals(0, group.size());
         assertEquals(groupMaxSize + 1, group.numPendingJoinMembers());
         assertTrue(group.isInState(EMPTY));
 
-        List<String> memberIds = verifyGenericGroupJoinResponses(firstRoundFutures, 0, Errors.MEMBER_ID_REQUIRED);
+        List<String> memberIds = verifyClassicGroupJoinResponses(firstRoundJoinResults, 0, Errors.MEMBER_ID_REQUIRED);
         assertEquals(groupMaxSize + 1, memberIds.size());
 
         // Second round of join requests with the generated member ids.
         // One of them will fail, reaching group max size.
         memberIds.forEach(memberId -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+            GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
                 request.setMemberId(memberId),
-                responseFuture,
                 requiredKnownMemberId
             );
-            assertTrue(result.records().isEmpty());
+            assertTrue(joinResult.records.isEmpty());
         });
 
         assertEquals(groupMaxSize, group.size());
@@ -4040,27 +3709,20 @@ public class GroupMetadataManagerTest {
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
         // Members can rejoin while rebalancing
-        List<CompletableFuture<JoinGroupResponseData>> thirdRoundFutures = new ArrayList<>();
-        memberIds.forEach(memberId -> {
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            thirdRoundFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-                request.setMemberId(memberId),
-                responseFuture,
-                requiredKnownMemberId
-            );
-            assertTrue(result.records().isEmpty());
-        });
+        List<GroupMetadataManagerTestContext.JoinResult> thirdRoundJoinResults = memberIds.stream().map(memberId -> context.sendClassicGroupJoin(
+            request.setMemberId(memberId),
+            requiredKnownMemberId
+        )).collect(Collectors.toList());
 
         // Advance clock by group initial rebalance delay to complete first inital delayed join.
         // This will extend the initial rebalance as new members have joined.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
         // Advance clock by group initial rebalance delay to complete second inital delayed join.
         // Since there are no new members that joined since the previous delayed join,
         // we will complete the rebalance.
-        assertNoOrEmptyResult(context.sleep(50));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(50));
 
-        verifyGenericGroupJoinResponses(thirdRoundFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        verifyClassicGroupJoinResponses(thirdRoundJoinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
         assertEquals(groupMaxSize, group.size());
         assertEquals(0, group.numAwaitingJoinResponse());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
@@ -4071,62 +3733,49 @@ public class GroupMetadataManagerTest {
         int groupMaxSize = 10;
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSize(groupMaxSize)
-            .withGenericGroupInitialRebalanceDelayMs(50)
+            .withClassicGroupMaxSize(groupMaxSize)
+            .withClassicGroupInitialRebalanceDelayMs(50)
             .build();
 
         // Create a group and add members that exceed the group max size.
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
         List<String> memberIds = IntStream.range(0, groupMaxSize + 2)
             .mapToObj(i -> group.generateMemberId("client-id", Optional.empty()))
             .collect(Collectors.toList());
 
-        memberIds.forEach(memberId -> {
-            JoinGroupRequestProtocolCollection protocols = new JoinGroupRequestProtocolCollection();
-            protocols.add(new JoinGroupRequestProtocol()
-                .setName("range")
-                .setMetadata(new byte[0]));
-
-            group.add(
-                new GenericGroupMember(
-                    memberId,
-                    Optional.empty(),
-                    "client-id",
-                    "client-host",
-                    10000,
-                    5000,
-                    "consumer",
-                    protocols
-                )
-            );
-        });
+        memberIds.forEach(memberId -> group.add(
+            new ClassicGroupMember(
+                memberId,
+                Optional.empty(),
+                "client-id",
+                "client-host",
+                10000,
+                5000,
+                "consumer",
+                GroupMetadataManagerTestContext.toProtocols("range")
+            )
+        ));
 
         context.groupMetadataManager.prepareRebalance(group, "test");
 
-        List<CompletableFuture<JoinGroupResponseData>> responseFutures = new ArrayList<>();
-        memberIds.forEach(memberId -> {
-            JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        List<GroupMetadataManagerTestContext.JoinResult> joinResults = memberIds.stream().map(memberId -> context.sendClassicGroupJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
                 .withGroupId("group-id")
                 .withMemberId(memberId)
                 .withDefaultProtocolTypeAndProtocols()
                 .withRebalanceTimeoutMs(10000)
-                .build();
-
-            CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-            responseFutures.add(responseFuture);
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-            assertTrue(result.records().isEmpty());
-        });
+                .build()
+        )).collect(Collectors.toList());
 
         assertEquals(groupMaxSize, group.size());
         assertEquals(groupMaxSize, group.numAwaitingJoinResponse());
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
         // Advance clock by rebalance timeout to complete join phase.
-        assertNoOrEmptyResult(context.sleep(10000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(10000));
 
-        verifyGenericGroupJoinResponses(responseFutures, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
+        verifyClassicGroupJoinResponses(joinResults, groupMaxSize, Errors.GROUP_MAX_SIZE_REACHED);
 
         assertEquals(groupMaxSize, group.size());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
@@ -4142,41 +3791,39 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupSessionTimeoutTooSmall() throws Exception {
         int minSessionTimeout = 50;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMinSessionTimeoutMs(minSessionTimeout)
+            .withClassicGroupMinSessionTimeoutMs(minSessionTimeout)
             .build();
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withSessionTimeoutMs(minSessionTimeout - 1)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-        assertTrue(responseFuture.isDone());
-        assertTrue(result.records().isEmpty());
-        assertEquals(Errors.INVALID_SESSION_TIMEOUT.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
+        assertTrue(joinResult.joinFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertEquals(Errors.INVALID_SESSION_TIMEOUT.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupSessionTimeoutTooLarge() throws Exception {
         int maxSessionTimeout = 50;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupMaxSessionTimeoutMs(maxSessionTimeout)
+            .withClassicGroupMaxSessionTimeoutMs(maxSessionTimeout)
             .build();
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withSessionTimeoutMs(maxSessionTimeout + 1)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.INVALID_SESSION_TIMEOUT.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.INVALID_SESSION_TIMEOUT.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
@@ -4184,107 +3831,101 @@ public class GroupMetadataManagerTest {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId("member-id")
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
 
         // Static member
-        request = new JoinGroupRequestBuilder()
+        request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId("member-id")
             .withGroupInstanceId("group-instance-id")
             .build();
 
-        responseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request, responseFuture);
+        joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
-    public void testGenericGroupJoinInconsistentProtocolType() throws Exception {
+    public void testClassicGroupJoinInconsistentProtocolType() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
 
-        request = new JoinGroupRequestBuilder()
+        request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("connect")
-            .withProtocols(toProtocols("range"))
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range"))
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupWithEmptyProtocolType() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("")
-            .withProtocols(toProtocols("range"))
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range"))
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), responseFuture.get().errorCode());
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), joinResult.joinFuture.get().errorCode());
 
         // Send as static member join.
-        responseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setGroupInstanceId("group-instance-id"), responseFuture, true, true);
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), responseFuture.get().errorCode());
+        joinResult = context.sendClassicGroupJoin(request.setGroupInstanceId("group-instance-id"), true, true);
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupWithEmptyGroupProtocol() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("consumer")
             .withProtocols(new JoinGroupRequestProtocolCollection(0))
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), responseFuture.get().errorCode());
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
@@ -4297,49 +3938,47 @@ public class GroupMetadataManagerTest {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
 
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
-            .withSessionTimeoutMs(5000 + context.genericGroupNewMemberJoinTimeoutMs)
-            .withRebalanceTimeoutMs(2 * context.genericGroupNewMemberJoinTimeoutMs)
+            .withSessionTimeoutMs(5000 + context.classicGroupNewMemberJoinTimeoutMs)
+            .withRebalanceTimeoutMs(2 * context.classicGroupNewMemberJoinTimeoutMs)
             .build();
 
-        JoinGroupResponseData firstResponse = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData firstResponse = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
         String firstMemberId = firstResponse.memberId();
         assertEquals(firstResponse.leader(), firstMemberId);
         assertEquals(Errors.NONE.code(), firstResponse.errorCode());
 
         assertNotNull(group);
-        assertEquals(0, group.allMembers().stream().filter(GenericGroupMember::isNew).count());
+        assertEquals(0, group.allMembers().stream().filter(ClassicGroupMember::isNew).count());
 
         // Send second join group request for a new dynamic member.
-        CompletableFuture<JoinGroupResponseData> secondResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request
+        GroupMetadataManagerTestContext.JoinResult secondJoinResult = context.sendClassicGroupJoin(request
             .setSessionTimeoutMs(5000)
-            .setRebalanceTimeoutMs(5000),
-            secondResponseFuture
+            .setRebalanceTimeoutMs(5000)
         );
-        assertTrue(result.records().isEmpty());
-        assertFalse(secondResponseFuture.isDone());
+        assertTrue(secondJoinResult.records.isEmpty());
+        assertFalse(secondJoinResult.joinFuture.isDone());
 
         assertEquals(2, group.allMembers().size());
-        assertEquals(1, group.allMembers().stream().filter(GenericGroupMember::isNew).count());
+        assertEquals(1, group.allMembers().stream().filter(ClassicGroupMember::isNew).count());
 
-        GenericGroupMember newMember = group.allMembers().stream().filter(GenericGroupMember::isNew).findFirst().get();
+        ClassicGroupMember newMember = group.allMembers().stream().filter(ClassicGroupMember::isNew).findFirst().get();
         assertNotEquals(firstMemberId, newMember.memberId());
 
         // Advance clock by new member join timeout to expire the second member.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupNewMemberJoinTimeoutMs));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupNewMemberJoinTimeoutMs));
 
-        assertTrue(secondResponseFuture.isDone());
-        JoinGroupResponseData secondResponse = secondResponseFuture.get();
+        assertTrue(secondJoinResult.joinFuture.isDone());
+        JoinGroupResponseData secondResponse = secondJoinResult.joinFuture.get();
 
         assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), secondResponse.errorCode());
         assertEquals(1, group.allMembers().size());
-        assertEquals(0, group.allMembers().stream().filter(GenericGroupMember::isNew).count());
+        assertEquals(0, group.allMembers().stream().filter(ClassicGroupMember::isNew).count());
         assertEquals(firstMemberId, group.allMembers().iterator().next().memberId());
     }
 
@@ -4347,102 +3986,96 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupInconsistentGroupProtocol() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
-            .withDefaultProtocolTypeAndProtocols()
+            .withProtocolType("consumer")
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range"))
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
 
-        JoinGroupRequestProtocolCollection otherProtocols = new JoinGroupRequestProtocolCollection(0);
-        otherProtocols.add(new JoinGroupRequestProtocol().setName("roundrobin"));
-        CompletableFuture<JoinGroupResponseData> otherResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setProtocols(otherProtocols), otherResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult otherJoinResult = context.sendClassicGroupJoin(request.setProtocols(GroupMetadataManagerTestContext.toProtocols("roundrobin")));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(otherResponseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(otherJoinResult.joinFuture.isDone());
 
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs));
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get().errorCode());
-        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), otherResponseFuture.get().errorCode());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs));
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), otherJoinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupSecondJoinInconsistentProtocol() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture, true);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), joinResult.joinFuture.get().errorCode());
 
         // Sending an inconsistent protocol should be refused
-        String memberId = responseFuture.get(5, TimeUnit.SECONDS).memberId();
+        String memberId = joinResult.joinFuture.get().memberId();
         JoinGroupRequestProtocolCollection emptyProtocols = new JoinGroupRequestProtocolCollection(0);
         request = request.setMemberId(memberId)
             .setProtocols(emptyProtocols);
 
-        responseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request, responseFuture, true);
+        joinResult = context.sendClassicGroupJoin(request, true);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.INCONSISTENT_GROUP_PROTOCOL.code(), joinResult.joinFuture.get().errorCode());
 
         // Sending consistent protocol should be accepted
-        responseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setProtocols(toProtocols("range")), responseFuture, true);
+        joinResult = context.sendClassicGroupJoin(request.setProtocols(GroupMetadataManagerTestContext.toProtocols("range")), true);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
 
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs));
 
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testStaticMemberJoinAsFirstMember() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withGroupInstanceId("group-instance-id")
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        context.joinGenericGroupAndCompleteJoin(request, false, true);
+        context.joinClassicGroupAndCompleteJoin(request, false, true);
     }
 
     @Test
     public void testStaticMemberRejoinWithExplicitUnknownMemberId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withGroupInstanceId("group-instance-id")
@@ -4451,27 +4084,25 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(5000)
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAndCompleteJoin(request, false, true);
+        JoinGroupResponseData response = context.joinClassicGroupAndCompleteJoin(request, false, true);
         assertEquals(Errors.NONE.code(), response.errorCode());
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            request.setMemberId("unknown-member-id"),
-            responseFuture
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            request.setMemberId("unknown-member-id")
         );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.FENCED_INSTANCE_ID.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.FENCED_INSTANCE_ID.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupUnknownConsumerExistingGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -4479,37 +4110,36 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(5000)
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData response = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
         assertEquals(Errors.NONE.code(), response.errorCode());
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request
-            .setMemberId("other-member-id"), responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            request.setMemberId("other-member-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupUnknownConsumerNewDeadGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
         group.transitionTo(DEAD);
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
@@ -4517,181 +4147,171 @@ public class GroupMetadataManagerTest {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId("member-id")
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), responseFuture.get().errorCode());
-        assertNull(responseFuture.get().protocolType());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
+        assertNull(joinResult.joinFuture.get().protocolType());
     }
 
     @Test
     public void testJoinGroupReturnsTheProtocolType() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
         // Leader joins
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> leaderResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, leaderResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(leaderResponseFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertFalse(leaderJoinResult.joinFuture.isDone());
 
         // Member joins
-        CompletableFuture<JoinGroupResponseData> memberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request, memberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult memberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(memberResponseFuture.isDone());
+        assertTrue(memberJoinResult.records.isEmpty());
+        assertFalse(memberJoinResult.joinFuture.isDone());
 
         // Complete join group phase
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs));
-        assertTrue(leaderResponseFuture.isDone());
-        assertTrue(memberResponseFuture.isDone());
-
-        assertEquals(Errors.NONE.code(), leaderResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals("consumer", leaderResponseFuture.get(5, TimeUnit.SECONDS).protocolType());
-        assertEquals(Errors.NONE.code(), memberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals("consumer", memberResponseFuture.get(5, TimeUnit.SECONDS).protocolType());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs));
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(memberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals("consumer", leaderJoinResult.joinFuture.get().protocolType());
+        assertEquals(Errors.NONE.code(), memberJoinResult.joinFuture.get().errorCode());
+        assertEquals("consumer", memberJoinResult.joinFuture.get().protocolType());
     }
 
     @Test
     public void testDelayInitialRebalanceByGroupInitialRebalanceDelayOnEmptyGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
 
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs / 2));
-        assertFalse(responseFuture.isDone());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs / 2));
+        assertFalse(joinResult.joinFuture.isDone());
 
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs / 2 + 1));
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs / 2 + 1));
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testResetRebalanceDelayWhenNewMemberJoinsGroupDuringInitialRebalance() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
-            .withRebalanceTimeoutMs(context.genericGroupInitialRebalanceDelayMs * 3)
+            .withRebalanceTimeoutMs(context.classicGroupInitialRebalanceDelayMs * 3)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> firstMemberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, firstMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult firstMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(firstMemberResponseFuture.isDone());
+        assertTrue(firstMemberJoinResult.records.isEmpty());
+        assertFalse(firstMemberJoinResult.joinFuture.isDone());
 
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs - 1));
-        CompletableFuture<JoinGroupResponseData> secondMemberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request, secondMemberResponseFuture);
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs - 1));
+        GroupMetadataManagerTestContext.JoinResult secondMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(secondMemberResponseFuture.isDone());
-        assertNoOrEmptyResult(context.sleep(2));
+        assertTrue(secondMemberJoinResult.records.isEmpty());
+        assertFalse(secondMemberJoinResult.joinFuture.isDone());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2));
 
         // Advance clock past initial rebalance delay and verify futures are not completed.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs / 2 + 1));
-        assertFalse(firstMemberResponseFuture.isDone());
-        assertFalse(secondMemberResponseFuture.isDone());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs / 2 + 1));
+        assertFalse(firstMemberJoinResult.joinFuture.isDone());
+        assertFalse(secondMemberJoinResult.joinFuture.isDone());
 
         // Advance clock beyond recomputed delay and make sure the futures have completed.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs / 2));
-        assertTrue(firstMemberResponseFuture.isDone());
-        assertTrue(secondMemberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), firstMemberResponseFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), secondMemberResponseFuture.get().errorCode());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs / 2));
+        assertTrue(firstMemberJoinResult.joinFuture.isDone());
+        assertTrue(secondMemberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), firstMemberJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), secondMemberJoinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testDelayRebalanceUptoRebalanceTimeout() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
-            .withRebalanceTimeoutMs(context.genericGroupInitialRebalanceDelayMs * 2)
+            .withRebalanceTimeoutMs(context.classicGroupInitialRebalanceDelayMs * 2)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> firstMemberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, firstMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult firstMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(firstMemberResponseFuture.isDone());
+        assertTrue(firstMemberJoinResult.records.isEmpty());
+        assertFalse(firstMemberJoinResult.joinFuture.isDone());
 
-        CompletableFuture<JoinGroupResponseData> secondMemberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request, secondMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult secondMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(secondMemberResponseFuture.isDone());
+        assertTrue(secondMemberJoinResult.records.isEmpty());
+        assertFalse(secondMemberJoinResult.joinFuture.isDone());
 
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs + 1));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs + 1));
 
-        CompletableFuture<JoinGroupResponseData> thirdMemberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request, thirdMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult thirdMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(thirdMemberResponseFuture.isDone());
+        assertTrue(thirdMemberJoinResult.records.isEmpty());
+        assertFalse(thirdMemberJoinResult.joinFuture.isDone());
 
         // Advance clock right before rebalance timeout.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs - 1));
-        assertFalse(firstMemberResponseFuture.isDone());
-        assertFalse(secondMemberResponseFuture.isDone());
-        assertFalse(thirdMemberResponseFuture.isDone());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs - 1));
+        assertFalse(firstMemberJoinResult.joinFuture.isDone());
+        assertFalse(secondMemberJoinResult.joinFuture.isDone());
+        assertFalse(thirdMemberJoinResult.joinFuture.isDone());
 
         // Advance clock beyond rebalance timeout.
-        assertNoOrEmptyResult(context.sleep(1));
-        assertTrue(firstMemberResponseFuture.isDone());
-        assertTrue(secondMemberResponseFuture.isDone());
-        assertTrue(thirdMemberResponseFuture.isDone());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(1));
+        assertTrue(firstMemberJoinResult.joinFuture.isDone());
+        assertTrue(secondMemberJoinResult.joinFuture.isDone());
+        assertTrue(thirdMemberJoinResult.joinFuture.isDone());
 
-        assertEquals(Errors.NONE.code(), firstMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals(Errors.NONE.code(), secondMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals(Errors.NONE.code(), thirdMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertEquals(Errors.NONE.code(), firstMemberJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), secondMemberJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), thirdMemberJoinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupReplaceStaticMember() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withGroupInstanceId("group-instance-id")
@@ -4700,29 +4320,27 @@ public class GroupMetadataManagerTest {
             .build();
 
         // Send join group as static member.
-        CompletableFuture<JoinGroupResponseData> oldMemberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, oldMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult oldMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(oldMemberResponseFuture.isDone());
+        assertTrue(oldMemberJoinResult.records.isEmpty());
+        assertFalse(oldMemberJoinResult.joinFuture.isDone());
         assertEquals(1, group.numAwaitingJoinResponse());
         assertEquals(1, group.size());
 
         // Replace static member with new member id. Old member id should be fenced.
-        CompletableFuture<JoinGroupResponseData> newMemberResponseFuture = new CompletableFuture<>();
-        context.sendGenericGroupJoin(request, newMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult newMemberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(newMemberResponseFuture.isDone());
-        assertTrue(oldMemberResponseFuture.isDone());
-        assertEquals(Errors.FENCED_INSTANCE_ID.code(), oldMemberResponseFuture.get().errorCode());
+        assertTrue(newMemberJoinResult.records.isEmpty());
+        assertFalse(newMemberJoinResult.joinFuture.isDone());
+        assertTrue(oldMemberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.FENCED_INSTANCE_ID.code(), oldMemberJoinResult.joinFuture.get().errorCode());
         assertEquals(1, group.numAwaitingJoinResponse());
         assertEquals(1, group.size());
 
         // Complete join for new member.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs));
-        assertTrue(newMemberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), newMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs));
+        assertTrue(newMemberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), newMemberJoinResult.joinFuture.get().errorCode());
         assertEquals(0, group.numAwaitingJoinResponse());
         assertEquals(1, group.size());
     }
@@ -4731,26 +4349,25 @@ public class GroupMetadataManagerTest {
     public void testHeartbeatExpirationShouldRemovePendingMember() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .withSessionTimeoutMs(1000)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture, true);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), joinResult.joinFuture.get().errorCode());
         assertEquals(0, group.size());
         assertEquals(1, group.numPendingJoinMembers());
 
         // Advance clock by session timeout. Pending member should be removed from group as heartbeat expires.
-        assertNoOrEmptyResult(context.sleep(1000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(1000));
         assertEquals(0, group.numPendingJoinMembers());
     }
 
@@ -4758,38 +4375,38 @@ public class GroupMetadataManagerTest {
     public void testHeartbeatExpirationShouldRemoveMember() throws Exception {
         // Set initial rebalance delay to simulate a long running rebalance.
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
-            .withGenericGroupInitialRebalanceDelayMs(10 * 60 * 1000)
+            .withClassicGroupInitialRebalanceDelayMs(10 * 60 * 1000)
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
         assertEquals(1, group.size());
 
         String memberId = group.leaderOrNull();
         // Advance clock by new member join timeout. Member should be removed from group as heartbeat expires.
         // A group that transitions to Empty after completing join phase will generate records.
-        List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(context.genericGroupNewMemberJoinTimeoutMs);
+        List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(context.classicGroupNewMemberJoinTimeoutMs);
 
         assertEquals(1, timeouts.size());
         timeouts.forEach(timeout -> {
-            assertEquals(genericGroupHeartbeatKey("group-id", memberId), timeout.key);
-            assertEquals(Collections.singletonList(
-                RecordHelpers.newGroupMetadataRecord(group, Collections.emptyMap(), MetadataVersion.latest())),
-                timeout.result.records());
+            assertEquals(classicGroupHeartbeatKey("group-id", memberId), timeout.key);
+            assertEquals(
+                Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+                timeout.result.records()
+            );
         });
 
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
         assertEquals(0, group.size());
     }
 
@@ -4797,15 +4414,15 @@ public class GroupMetadataManagerTest {
     public void testExistingMemberJoinDeadGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData response = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
         assertEquals(Errors.NONE.code(), response.errorCode());
         String memberId = response.memberId();
 
@@ -4813,39 +4430,38 @@ public class GroupMetadataManagerTest {
 
         group.transitionTo(DEAD);
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testJoinGroupExistingPendingMemberWithGroupInstanceIdThrowsException() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture, true);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), responseFuture.get().errorCode());
-
-        String memberId = responseFuture.get(5, TimeUnit.SECONDS).memberId();
+        assertTrue(joinResult.records.isEmpty());
+        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), joinResult.joinFuture.get().errorCode());
+        assertTrue(joinResult.joinFuture.isDone());
+        String memberId = joinResult.joinFuture.get().memberId();
 
         assertThrows(IllegalStateException.class,
-            () -> context.sendGenericGroupJoin(
-                request.setMemberId(memberId).setGroupInstanceId("group-instance-id"),
-                new CompletableFuture<>())
+            () -> context.sendClassicGroupJoin(
+                request
+                    .setMemberId(memberId)
+                    .setGroupInstanceId("group-instance-id")
+            )
         );
     }
 
@@ -4853,39 +4469,40 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupExistingMemberUpdatedMetadataTriggersRebalance() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestProtocolCollection protocols = toProtocols("range");
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("range");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("consumer")
             .withProtocols(protocols)
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData response = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
 
         assertEquals(Errors.NONE.code(), response.errorCode());
         String memberId = response.memberId();
-        GenericGroupMember member = group.member(memberId);
+        ClassicGroupMember member = group.member(memberId);
 
         assertEquals(protocols, member.supportedProtocols());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(1, group.generationId());
 
-        protocols = toProtocols("range", "roundrobin");
+        protocols = GroupMetadataManagerTestContext.toProtocols("range", "roundrobin");
 
         // Send updated member metadata. This should trigger a rebalance and complete the join phase.
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            request.setMemberId(memberId).setProtocols(protocols),
-            responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(memberId)
+                .setProtocols(protocols)
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
 
-        assertTrue(responseFuture.isDone());
+        assertTrue(joinResult.joinFuture.isDone());
         assertEquals(Errors.NONE.code(), response.errorCode());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.generationId());
@@ -4896,15 +4513,15 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupAsExistingLeaderTriggersRebalanceInStableState() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData response = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
 
         assertEquals(Errors.NONE.code(), response.errorCode());
         String memberId = response.memberId();
@@ -4915,14 +4532,13 @@ public class GroupMetadataManagerTest {
 
         group.transitionTo(STABLE);
         // Sending join group as leader should trigger a rebalance.
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            request.setMemberId(memberId),
-            responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            request.setMemberId(memberId)
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.generationId());
     }
@@ -4931,37 +4547,35 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupAsExistingMemberWithUpdatedMetadataTriggersRebalanceInStableState() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("consumer")
-            .withProtocols(toProtocols("range"))
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range"))
             .build();
 
-        JoinGroupResponseData leaderResponse = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData leaderResponse = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
         assertEquals(Errors.NONE.code(), leaderResponse.errorCode());
         String leaderId = leaderResponse.leader();
         assertEquals(1, group.generationId());
 
         // Member joins.
-        CompletableFuture<JoinGroupResponseData> memberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, memberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult memberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(memberResponseFuture.isDone());
+        assertTrue(memberJoinResult.records.isEmpty());
+        assertFalse(memberJoinResult.joinFuture.isDone());
 
         // Leader also rejoins. Completes join group phase.
-        CompletableFuture<JoinGroupResponseData> leaderResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(leaderId), leaderResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(request.setMemberId(leaderId));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderResponseFuture.isDone());
-        assertTrue(memberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderResponseFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), memberResponseFuture.get().errorCode());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(memberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), memberJoinResult.joinFuture.get().errorCode());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.size());
         assertEquals(2, group.generationId());
@@ -4969,24 +4583,26 @@ public class GroupMetadataManagerTest {
         group.transitionTo(STABLE);
 
         // Member rejoins with updated metadata. This should trigger a rebalance.
-        String memberId = memberResponseFuture.get().memberId();
+        String memberId = memberJoinResult.joinFuture.get().memberId();
 
-        JoinGroupRequestProtocolCollection protocols = toProtocols("range", "roundrobin");
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("range", "roundrobin");
 
-        memberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(memberId).setProtocols(protocols), memberResponseFuture);
+        memberJoinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(memberId)
+                .setProtocols(protocols)
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(memberResponseFuture.isDone());
+        assertTrue(memberJoinResult.records.isEmpty());
+        assertFalse(memberJoinResult.joinFuture.isDone());
 
         // Leader rejoins. This completes the join group phase.
-        leaderResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(leaderId), leaderResponseFuture);
+        leaderJoinResult = context.sendClassicGroupJoin(request.setMemberId(leaderId));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderResponseFuture.isDone());
-        assertTrue(memberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), memberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(memberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), memberJoinResult.joinFuture.get().errorCode());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(3, group.generationId());
         assertEquals(2, group.size());
@@ -4996,49 +4612,46 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupExistingMemberDoesNotTriggerRebalanceInStableState() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData leaderResponse = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData leaderResponse = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
         assertEquals(Errors.NONE.code(), leaderResponse.errorCode());
         String leaderId = leaderResponse.leader();
         assertEquals(1, group.generationId());
 
         // Member joins.
-        CompletableFuture<JoinGroupResponseData> memberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, memberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult memberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(memberResponseFuture.isDone());
+        assertTrue(memberJoinResult.records.isEmpty());
+        assertFalse(memberJoinResult.joinFuture.isDone());
 
         // Leader also rejoins. Completes join group phase.
-        CompletableFuture<JoinGroupResponseData> leaderResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(leaderId), leaderResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(request.setMemberId(leaderId));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderResponseFuture.isDone());
-        assertTrue(memberResponseFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(memberJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.size());
         assertEquals(2, group.generationId());
 
-        String memberId = memberResponseFuture.get(5, TimeUnit.SECONDS).memberId();
+        String memberId = memberJoinResult.joinFuture.get().memberId();
 
         group.transitionTo(STABLE);
 
         // Member rejoins with no metadata changes. This does not trigger a rebalance.
-        memberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(memberId), memberResponseFuture);
+        memberJoinResult = context.sendClassicGroupJoin(request.setMemberId(memberId));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(memberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), memberResponseFuture.get().errorCode());
-        assertEquals(2, memberResponseFuture.get().generationId());
+        assertTrue(memberJoinResult.records.isEmpty());
+        assertTrue(memberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), memberJoinResult.joinFuture.get().errorCode());
+        assertEquals(2, memberJoinResult.joinFuture.get().generationId());
         assertTrue(group.isInState(STABLE));
     }
 
@@ -5047,15 +4660,15 @@ public class GroupMetadataManagerTest {
         // Existing member joins a group that is in Empty/Dead state. Ask member to rejoin with generation id reset.
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData response = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
 
         assertEquals(Errors.NONE.code(), response.errorCode());
         String memberId = response.memberId();
@@ -5065,22 +4678,21 @@ public class GroupMetadataManagerTest {
         group.transitionTo(PREPARING_REBALANCE);
         group.transitionTo(EMPTY);
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request.setMemberId(memberId), responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request.setMemberId(memberId));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals(-1, responseFuture.get(5, TimeUnit.SECONDS).generationId());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
+        assertEquals(-1, joinResult.joinFuture.get().generationId());
     }
 
     @Test
     public void testCompleteJoinRemoveNotYetRejoinedDynamicMembers() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -5088,26 +4700,25 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(1000)
             .build();
 
-        JoinGroupResponseData leaderResponse = context.joinGenericGroupAsDynamicMemberAndCompleteJoin(request);
+        JoinGroupResponseData leaderResponse = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(request);
         assertEquals(Errors.NONE.code(), leaderResponse.errorCode());
         assertEquals(1, group.generationId());
 
         // Add new member. This triggers a rebalance.
-        CompletableFuture<JoinGroupResponseData> memberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, memberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult memberJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(memberResponseFuture.isDone());
+        assertTrue(memberJoinResult.records.isEmpty());
+        assertFalse(memberJoinResult.joinFuture.isDone());
         assertEquals(2, group.size());
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
         // Advance clock by rebalance timeout. This will expire the leader as it has not rejoined.
-        assertNoOrEmptyResult(context.sleep(1000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(1000));
 
-        assertTrue(memberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), memberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(memberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), memberJoinResult.joinFuture.get().errorCode());
         assertEquals(1, group.size());
-        assertTrue(group.hasMemberId(memberResponseFuture.get(5, TimeUnit.SECONDS).memberId()));
+        assertTrue(group.hasMemberId(memberJoinResult.joinFuture.get().memberId()));
         assertEquals(2, group.generationId());
     }
 
@@ -5115,9 +4726,9 @@ public class GroupMetadataManagerTest {
     public void testCompleteJoinPhaseInEmptyStateSkipsRebalance() {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -5125,18 +4736,17 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(1000)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
 
         assertEquals(0, group.generationId());
         assertTrue(group.isInState(PREPARING_REBALANCE));
         group.transitionTo(DEAD);
 
         // Advance clock by initial rebalance delay to complete join phase.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs));
         assertEquals(0, group.generationId());
     }
 
@@ -5144,9 +4754,9 @@ public class GroupMetadataManagerTest {
     public void testCompleteJoinPhaseNoMembersRejoinedExtendsJoinPhase() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("first-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
@@ -5156,33 +4766,31 @@ public class GroupMetadataManagerTest {
             .build();
 
         // First member joins group and completes join phase.
-        JoinGroupResponseData firstMemberResponse = context.joinGenericGroupAndCompleteJoin(request, true, true);
+        JoinGroupResponseData firstMemberResponse = context.joinClassicGroupAndCompleteJoin(request, true, true);
         assertEquals(Errors.NONE.code(), firstMemberResponse.errorCode());
         String firstMemberId = firstMemberResponse.memberId();
 
         // Second member joins and group goes into rebalancing state.
-        CompletableFuture<JoinGroupResponseData> secondMemberResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            request.setGroupInstanceId("second-instance-id"), secondMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult secondMemberJoinResult = context.sendClassicGroupJoin(
+            request.setGroupInstanceId("second-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(secondMemberResponseFuture.isDone());
+        assertTrue(secondMemberJoinResult.records.isEmpty());
+        assertFalse(secondMemberJoinResult.joinFuture.isDone());
 
         // First static member rejoins and completes join phase.
-        CompletableFuture<JoinGroupResponseData> firstMemberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(firstMemberId).setGroupInstanceId("first-instance-id"),
-            firstMemberResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult firstMemberJoinResult = context.sendClassicGroupJoin(
+            request.setMemberId(firstMemberId).setGroupInstanceId("first-instance-id"));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(firstMemberResponseFuture.isDone());
-        assertTrue(secondMemberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), firstMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals(Errors.NONE.code(), secondMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(firstMemberJoinResult.records.isEmpty());
+        assertTrue(firstMemberJoinResult.joinFuture.isDone());
+        assertTrue(secondMemberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), firstMemberJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), secondMemberJoinResult.joinFuture.get().errorCode());
         assertEquals(2, group.size());
         assertEquals(2, group.generationId());
 
-        String secondMemberId = secondMemberResponseFuture.get(5, TimeUnit.SECONDS).memberId();
+        String secondMemberId = secondMemberJoinResult.joinFuture.get().memberId();
 
         // Trigger a rebalance. No members rejoined.
         context.groupMetadataManager.prepareRebalance(group, "trigger rebalance");
@@ -5193,9 +4801,9 @@ public class GroupMetadataManagerTest {
 
         // Advance clock by rebalance timeout to complete join phase. As long as both members have not
         // rejoined, we extend the join phase.
-        assertNoOrEmptyResult(context.sleep(10000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(10000));
         assertEquals(10000, context.timer.timeout("join-group-id").deadlineMs - context.time.milliseconds());
-        assertNoOrEmptyResult(context.sleep(10000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(10000));
         assertEquals(10000, context.timer.timeout("join-group-id").deadlineMs - context.time.milliseconds());
 
         assertTrue(group.isInState(PREPARING_REBALANCE));
@@ -5203,27 +4811,29 @@ public class GroupMetadataManagerTest {
         assertEquals(2, group.generationId());
 
         // Let first and second member rejoin. This should complete the join phase.
-        firstMemberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(firstMemberId).setGroupInstanceId("first-instance-id"),
-            firstMemberResponseFuture);
+        firstMemberJoinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(firstMemberId)
+                .setGroupInstanceId("first-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(firstMemberResponseFuture.isDone());
+        assertTrue(firstMemberJoinResult.records.isEmpty());
+        assertFalse(firstMemberJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(PREPARING_REBALANCE));
         assertEquals(2, group.size());
         assertEquals(2, group.generationId());
 
-        secondMemberResponseFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(secondMemberId).setGroupInstanceId("second-instance-id"),
-            secondMemberResponseFuture);
+        secondMemberJoinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(secondMemberId)
+                .setGroupInstanceId("second-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(firstMemberResponseFuture.isDone());
-        assertTrue(secondMemberResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), firstMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
-        assertEquals(Errors.NONE.code(), secondMemberResponseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(secondMemberJoinResult.records.isEmpty());
+        assertTrue(firstMemberJoinResult.joinFuture.isDone());
+        assertTrue(secondMemberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), firstMemberJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), secondMemberJoinResult.joinFuture.get().errorCode());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.size());
         assertEquals(3, group.generationId());
@@ -5236,17 +4846,17 @@ public class GroupMetadataManagerTest {
     ) throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("group-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("consumer")
-            .withProtocols(toProtocols("range"))
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range"))
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAndCompleteJoin(request, true, supportSkippingAssignment);
+        JoinGroupResponseData response = context.joinClassicGroupAndCompleteJoin(request, true, supportSkippingAssignment);
         assertEquals(Errors.NONE.code(), response.errorCode());
         String oldMemberId = response.memberId();
 
@@ -5258,27 +4868,26 @@ public class GroupMetadataManagerTest {
         group.transitionTo(STABLE);
 
         // Static member rejoins with UNKNOWN_MEMBER_ID. This should update the log with the generated member id.
-        JoinGroupRequestProtocolCollection protocols = toProtocols("range", "roundrobin");
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("range", "roundrobin");
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
             request
                 .setProtocols(protocols)
                 .setRebalanceTimeoutMs(7000)
                 .setSessionTimeoutMs(4500),
-            responseFuture,
             true,
-            supportSkippingAssignment);
+            supportSkippingAssignment
+        );
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            joinResult.records
         );
-        assertFalse(responseFuture.isDone());
+        assertFalse(joinResult.joinFuture.isDone());
 
         // Write was successful.
-        result.appendFuture().complete(null);
-        assertTrue(responseFuture.isDone());
+        joinResult.appendFuture.complete(null);
+        assertTrue(joinResult.joinFuture.isDone());
 
         String newMemberId = group.staticMemberId("group-instance-id");
 
@@ -5303,9 +4912,9 @@ public class GroupMetadataManagerTest {
                 .setLeader(newMemberId);
         }
 
-        GenericGroupMember updatedMember = group.member(group.staticMemberId("group-instance-id"));
+        ClassicGroupMember updatedMember = group.member(group.staticMemberId("group-instance-id"));
 
-        assertEquals(expectedResponse, responseFuture.get());
+        assertEquals(expectedResponse, joinResult.joinFuture.get());
         assertEquals(newMemberId, updatedMember.memberId());
         assertEquals(Optional.of("group-instance-id"), updatedMember.groupInstanceId());
         assertEquals(7000, updatedMember.rebalanceTimeoutMs());
@@ -5321,17 +4930,17 @@ public class GroupMetadataManagerTest {
     public void testReplaceStaticMemberInStableStateWithUpdatedProtocolTriggersRebalance() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("group-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("consumer")
-            .withProtocols(toProtocols("range", "roundrobin"))
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range", "roundrobin"))
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAndCompleteJoin(request, true, true);
+        JoinGroupResponseData response = context.joinClassicGroupAndCompleteJoin(request, true, true);
         assertEquals(Errors.NONE.code(), response.errorCode());
         assertEquals(1, group.size());
         assertEquals(1, group.generationId());
@@ -5341,16 +4950,13 @@ public class GroupMetadataManagerTest {
         group.transitionTo(STABLE);
 
         // Static member rejoins with UNKNOWN_MEMBER_ID. The selected protocol changes and triggers a rebalance.
-
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            request.setProtocols(toProtocols("roundrobin")),
-            responseFuture
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            request.setProtocols(GroupMetadataManagerTestContext.toProtocols("roundrobin"))
         );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertEquals(1, group.size());
         assertEquals(2, group.generationId());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
@@ -5361,11 +4967,11 @@ public class GroupMetadataManagerTest {
         // If the append future fails, confirm that the member is not updated.
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestProtocolCollection protocols = toProtocols("range");
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("range");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("group-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
@@ -5375,7 +4981,7 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(3000)
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAndCompleteJoin(request, false, false);
+        JoinGroupResponseData response = context.joinClassicGroupAndCompleteJoin(request, false, false);
         assertEquals(Errors.NONE.code(), response.errorCode());
         assertEquals(1, group.size());
         assertEquals(1, group.generationId());
@@ -5391,25 +4997,24 @@ public class GroupMetadataManagerTest {
                 .setMetadata(ConsumerProtocol.serializeSubscription(new ConsumerPartitionAssignor.Subscription(
                     Collections.singletonList("bar"))).array()));
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
             request
                 .setProtocols(protocols)
                 .setRebalanceTimeoutMs(7000)
                 .setSessionTimeoutMs(6000),
-            responseFuture,
             false,
-            false);
+            false
+        );
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            joinResult.records
         );
-        assertFalse(responseFuture.isDone());
+        assertFalse(joinResult.joinFuture.isDone());
 
         // Simulate a failed write to the log.
-        result.appendFuture().completeExceptionally(new UnknownTopicOrPartitionException());
-        assertTrue(responseFuture.isDone());
+        joinResult.appendFuture.completeExceptionally(new UnknownTopicOrPartitionException());
+        assertTrue(joinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedResponse = new JoinGroupResponseData()
             .setMembers(Collections.emptyList())
@@ -5421,9 +5026,9 @@ public class GroupMetadataManagerTest {
             .setSkipAssignment(false)
             .setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code());
 
-        assertEquals(expectedResponse, responseFuture.get());
+        assertEquals(expectedResponse, joinResult.joinFuture.get());
 
-        GenericGroupMember revertedMember = group.member(group.staticMemberId("group-instance-id"));
+        ClassicGroupMember revertedMember = group.member(group.staticMemberId("group-instance-id"));
 
         assertEquals(oldMemberId, revertedMember.memberId());
         assertEquals(Optional.of("group-instance-id"), revertedMember.groupInstanceId());
@@ -5443,19 +5048,17 @@ public class GroupMetadataManagerTest {
         // If the append future succeeds, the soft state is updated with the new member.
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestProtocolCollection protocols = toProtocols("range");
-
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("group-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolType("consumer")
-            .withProtocols(protocols)
+            .withProtocols(GroupMetadataManagerTestContext.toProtocols("range"))
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAndCompleteJoin(
+        JoinGroupResponseData response = context.joinClassicGroupAndCompleteJoin(
             request,
             true,
             supportSkippingAssignment
@@ -5471,50 +5074,43 @@ public class GroupMetadataManagerTest {
         group.transitionTo(STABLE);
 
         // Static member rejoins with UNKNOWN_MEMBER_ID and the append succeeds.
-        protocols.add(new JoinGroupRequestProtocol()
-            .setName("roundrobin")
-            .setMetadata(ConsumerProtocol.serializeSubscription(new ConsumerPartitionAssignor.Subscription(
-                Collections.singletonList("bar"))).array()));
-
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
             request
-                .setProtocols(protocols)
+                .setProtocols(GroupMetadataManagerTestContext.toProtocols("range", "roundrobin"))
                 .setRebalanceTimeoutMs(7000)
                 .setSessionTimeoutMs(6000),
-            responseFuture,
             true,
             supportSkippingAssignment);
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            joinResult.records
         );
-        assertFalse(responseFuture.isDone());
+        assertFalse(joinResult.joinFuture.isDone());
 
         // Simulate a successful write to the log.
-        result.appendFuture().complete(null);
-        assertTrue(responseFuture.isDone());
+        joinResult.appendFuture.complete(null);
+        assertTrue(joinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedResponse = new JoinGroupResponseData()
             .setMembers(supportSkippingAssignment ? toJoinResponseMembers(group) : Collections.emptyList())
-            .setLeader(supportSkippingAssignment ? responseFuture.get().memberId() : oldMemberId)
-            .setMemberId(responseFuture.get().memberId())
+            .setLeader(supportSkippingAssignment ? joinResult.joinFuture.get().memberId() : oldMemberId)
+            .setMemberId(joinResult.joinFuture.get().memberId())
             .setGenerationId(1)
             .setProtocolType("consumer")
             .setProtocolName("range")
             .setSkipAssignment(supportSkippingAssignment)
             .setErrorCode(Errors.NONE.code());
 
-        assertEquals(expectedResponse, responseFuture.get());
+        assertEquals(expectedResponse, joinResult.joinFuture.get());
 
-        GenericGroupMember newMember = group.member(group.staticMemberId("group-instance-id"));
+        ClassicGroupMember newMember = group.member(group.staticMemberId("group-instance-id"));
 
         assertNotEquals(oldMemberId, newMember.memberId());
         assertEquals(Optional.of("group-instance-id"), newMember.groupInstanceId());
         assertEquals(7000, newMember.rebalanceTimeoutMs());
         assertEquals(6000, newMember.sessionTimeoutMs());
-        assertEquals(protocols, newMember.supportedProtocols());
+        assertEquals(GroupMetadataManagerTestContext.toProtocols("range", "roundrobin"), newMember.supportedProtocols());
         assertEquals(1, group.size());
         assertEquals(1, group.generationId());
         assertTrue(group.isInState(STABLE));
@@ -5524,16 +5120,16 @@ public class GroupMetadataManagerTest {
     public void testReplaceStaticMemberInCompletingRebalanceStateTriggersRebalance() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("group-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData response = context.joinGenericGroupAndCompleteJoin(request, true, true);
+        JoinGroupResponseData response = context.joinClassicGroupAndCompleteJoin(request, true, true);
         assertEquals(Errors.NONE.code(), response.errorCode());
 
         assertEquals(1, group.size());
@@ -5541,12 +5137,11 @@ public class GroupMetadataManagerTest {
         assertTrue(group.isInState(COMPLETING_REBALANCE));
 
         // Static member rejoins with UNKNOWN_MEMBER_ID and triggers a rebalance.
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get(5, TimeUnit.SECONDS).errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertEquals(1, group.size());
         assertEquals(2, group.generationId());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
@@ -5556,6 +5151,7 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupAppendErrorConversion() {
         assertEquals(Errors.COORDINATOR_NOT_AVAILABLE, appendGroupMetadataErrorToResponseError(Errors.UNKNOWN_TOPIC_OR_PARTITION));
         assertEquals(Errors.COORDINATOR_NOT_AVAILABLE, appendGroupMetadataErrorToResponseError(Errors.NOT_ENOUGH_REPLICAS));
+        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE, appendGroupMetadataErrorToResponseError(Errors.REQUEST_TIMED_OUT));
 
         assertEquals(Errors.NOT_COORDINATOR, appendGroupMetadataErrorToResponseError(Errors.NOT_LEADER_OR_FOLLOWER));
         assertEquals(Errors.NOT_COORDINATOR, appendGroupMetadataErrorToResponseError(Errors.KAFKA_STORAGE_ERROR));
@@ -5567,305 +5163,41 @@ public class GroupMetadataManagerTest {
         assertEquals(Errors.LEADER_NOT_AVAILABLE, Errors.LEADER_NOT_AVAILABLE);
     }
 
-    private <T> void assertUnorderedListEquals(
-        List<T> expected,
-        List<T> actual
-    ) {
-        assertEquals(new HashSet<>(expected), new HashSet<>(actual));
-    }
-
-    private void assertResponseEquals(
-        ConsumerGroupHeartbeatResponseData expected,
-        ConsumerGroupHeartbeatResponseData actual
-    ) {
-        if (!responseEquals(expected, actual)) {
-            assertionFailure()
-                .expected(expected)
-                .actual(actual)
-                .buildAndThrow();
-        }
-    }
-
-    private boolean responseEquals(
-        ConsumerGroupHeartbeatResponseData expected,
-        ConsumerGroupHeartbeatResponseData actual
-    ) {
-        if (expected.throttleTimeMs() != actual.throttleTimeMs()) return false;
-        if (expected.errorCode() != actual.errorCode()) return false;
-        if (!Objects.equals(expected.errorMessage(), actual.errorMessage())) return false;
-        if (!Objects.equals(expected.memberId(), actual.memberId())) return false;
-        if (expected.memberEpoch() != actual.memberEpoch()) return false;
-        if (expected.shouldComputeAssignment() != actual.shouldComputeAssignment()) return false;
-        if (expected.heartbeatIntervalMs() != actual.heartbeatIntervalMs()) return false;
-        // Unordered comparison of the assignments.
-        return responseAssignmentEquals(expected.assignment(), actual.assignment());
-    }
-
-    private boolean responseAssignmentEquals(
-        ConsumerGroupHeartbeatResponseData.Assignment expected,
-        ConsumerGroupHeartbeatResponseData.Assignment actual
-    ) {
-        if (expected == actual) return true;
-        if (expected == null) return false;
-        if (actual == null) return false;
-
-        if (!Objects.equals(fromAssignment(expected.pendingTopicPartitions()), fromAssignment(actual.pendingTopicPartitions())))
-            return false;
-
-        return Objects.equals(fromAssignment(expected.assignedTopicPartitions()), fromAssignment(actual.assignedTopicPartitions()));
-    }
-
-    private Map<Uuid, Set<Integer>> fromAssignment(
-        List<ConsumerGroupHeartbeatResponseData.TopicPartitions> assignment
-    ) {
-        if (assignment == null) return null;
-
-        Map<Uuid, Set<Integer>> assignmentMap = new HashMap<>();
-        assignment.forEach(topicPartitions -> {
-            assignmentMap.put(topicPartitions.topicId(), new HashSet<>(topicPartitions.partitions()));
-        });
-        return assignmentMap;
-    }
-
-    private void assertRecordsEquals(
-        List<Record> expectedRecords,
-        List<Record> actualRecords
-    ) {
-        try {
-            assertEquals(expectedRecords.size(), actualRecords.size());
-
-            for (int i = 0; i < expectedRecords.size(); i++) {
-                Record expectedRecord = expectedRecords.get(i);
-                Record actualRecord = actualRecords.get(i);
-                assertRecordEquals(expectedRecord, actualRecord);
-            }
-        } catch (AssertionFailedError e) {
-            assertionFailure()
-                .expected(expectedRecords)
-                .actual(actualRecords)
-                .buildAndThrow();
-        }
-    }
-
-    private void assertRecordEquals(
-        Record expected,
-        Record actual
-    ) {
-        try {
-            assertApiMessageAndVersionEquals(expected.key(), actual.key());
-            assertApiMessageAndVersionEquals(expected.value(), actual.value());
-        } catch (AssertionFailedError e) {
-            assertionFailure()
-                .expected(expected)
-                .actual(actual)
-                .buildAndThrow();
-        }
-    }
-
-    private void assertApiMessageAndVersionEquals(
-        ApiMessageAndVersion expected,
-        ApiMessageAndVersion actual
-    ) {
-        if (expected == actual) return;
-
-        assertEquals(expected.version(), actual.version());
-
-        if (actual.message() instanceof ConsumerGroupCurrentMemberAssignmentValue) {
-            // The order of the topics stored in ConsumerGroupCurrentMemberAssignmentValue is not
-            // always guaranteed. Therefore, we need a special comparator.
-            ConsumerGroupCurrentMemberAssignmentValue expectedValue =
-                (ConsumerGroupCurrentMemberAssignmentValue) expected.message();
-            ConsumerGroupCurrentMemberAssignmentValue actualValue =
-                (ConsumerGroupCurrentMemberAssignmentValue) actual.message();
-
-            assertEquals(expectedValue.memberEpoch(), actualValue.memberEpoch());
-            assertEquals(expectedValue.previousMemberEpoch(), actualValue.previousMemberEpoch());
-            assertEquals(expectedValue.targetMemberEpoch(), actualValue.targetMemberEpoch());
-            assertEquals(expectedValue.error(), actualValue.error());
-            assertEquals(expectedValue.metadataVersion(), actualValue.metadataVersion());
-            assertEquals(expectedValue.metadataBytes(), actualValue.metadataBytes());
-
-            // We transform those to Maps before comparing them.
-            assertEquals(fromTopicPartitions(expectedValue.assignedPartitions()),
-                fromTopicPartitions(actualValue.assignedPartitions()));
-            assertEquals(fromTopicPartitions(expectedValue.partitionsPendingRevocation()),
-                fromTopicPartitions(actualValue.partitionsPendingRevocation()));
-            assertEquals(fromTopicPartitions(expectedValue.partitionsPendingAssignment()),
-                fromTopicPartitions(actualValue.partitionsPendingAssignment()));
-        } else {
-            assertEquals(expected.message(), actual.message());
-        }
-    }
-
-    private Map<Uuid, Set<Integer>> fromTopicPartitions(
-        List<ConsumerGroupCurrentMemberAssignmentValue.TopicPartitions> assignment
-    ) {
-        Map<Uuid, Set<Integer>> assignmentMap = new HashMap<>();
-        assignment.forEach(topicPartitions -> {
-            assignmentMap.put(topicPartitions.topicId(), new HashSet<>(topicPartitions.partitions()));
-        });
-        return assignmentMap;
-    }
-
-    private List<String> verifyGenericGroupJoinResponses(
-        List<CompletableFuture<JoinGroupResponseData>> responseFutures,
-        int expectedSuccessCount,
-        Errors expectedFailure
-    ) {
-        int successCount = 0;
-        List<String> memberIds = new ArrayList<>();
-        for (CompletableFuture<JoinGroupResponseData> responseFuture : responseFutures) {
-            if (!responseFuture.isDone()) {
-                fail("All responseFutures should be completed.");
-            }
-            try {
-                JoinGroupResponseData joinResponse = responseFuture.get();
-                if (joinResponse.errorCode() == Errors.NONE.code()) {
-                    successCount++;
-                } else {
-                    assertEquals(expectedFailure.code(), joinResponse.errorCode());
-                }
-                memberIds.add(joinResponse.memberId());
-            } catch (Exception e) {
-                fail("Unexpected exception: " + e.getMessage());
-            }
-        }
-
-        assertEquals(expectedSuccessCount, successCount);
-        return memberIds;
-    }
-
-    private static void assertNoOrEmptyResult(List<ExpiredTimeout<Void, Record>> timeouts) {
-        assertTrue(timeouts.size() <= 1);
-        timeouts.forEach(timeout -> assertEquals(EMPTY_RESULT, timeout.result));
-    }
-
-    private static class JoinGroupRequestBuilder {
-        String groupId = null;
-        String groupInstanceId = null;
-        String memberId = null;
-        String protocolType = "consumer";
-        JoinGroupRequestProtocolCollection protocols = new JoinGroupRequestProtocolCollection(0);
-        int sessionTimeoutMs = 500;
-        int rebalanceTimeoutMs = 500;
-        String reason = null;
-
-        JoinGroupRequestBuilder withGroupId(String groupId) {
-            this.groupId = groupId;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withGroupInstanceId(String groupInstanceId) {
-            this.groupInstanceId = groupInstanceId;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withMemberId(String memberId) {
-            this.memberId = memberId;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withDefaultProtocolTypeAndProtocols() {
-            this.protocols = toProtocols("range");
-            return this;
-        }
-
-        JoinGroupRequestBuilder withProtocolSuperset() {
-            this.protocols = toProtocols("range", "roundrobin");
-            return this;
-        }
-
-        JoinGroupRequestBuilder withProtocolType(String protocolType) {
-            this.protocolType = protocolType;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withProtocols(JoinGroupRequestProtocolCollection protocols) {
-            this.protocols = protocols;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withRebalanceTimeoutMs(int rebalanceTimeoutMs) {
-            this.rebalanceTimeoutMs = rebalanceTimeoutMs;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withSessionTimeoutMs(int sessionTimeoutMs) {
-            this.sessionTimeoutMs = sessionTimeoutMs;
-            return this;
-        }
-
-        JoinGroupRequestBuilder withReason(String reason) {
-            this.reason = reason;
-            return this;
-        }
-
-        JoinGroupRequestData build() {
-            return new JoinGroupRequestData()
-                .setGroupId(groupId)
-                .setGroupInstanceId(groupInstanceId)
-                .setMemberId(memberId)
-                .setProtocolType(protocolType)
-                .setProtocols(protocols)
-                .setRebalanceTimeoutMs(rebalanceTimeoutMs)
-                .setSessionTimeoutMs(sessionTimeoutMs)
-                .setReason(reason);
-        }
-    }
-
-    private static Record newGroupMetadataRecord(
-        String groupId,
-        GroupMetadataValue value,
-        MetadataVersion metadataVersion
-    ) {
-        return new Record(
-            new ApiMessageAndVersion(
-                new GroupMetadataKey()
-                    .setGroup(groupId),
-                (short) 2
-            ),
-            new ApiMessageAndVersion(
-                value,
-                metadataVersion.groupMetadataValueVersion()
-            )
-        );
-    }
-
     @Test
     public void testNewMemberTimeoutCompletion() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(UNKNOWN_MEMBER_ID)
-            .withDefaultProtocolTypeAndProtocols()
-            .withSessionTimeoutMs(context.genericGroupNewMemberJoinTimeoutMs + 5000)
-            .build();
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .withSessionTimeoutMs(context.classicGroupNewMemberJoinTimeoutMs + 5000)
+                .build()
+        );
 
-        CompletableFuture<JoinGroupResponseData> joinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(joinRequest, joinFuture);
-        assertTrue(result.records().isEmpty());
-        assertFalse(joinFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
 
         // Advance clock by initial rebalance delay to complete join phase.
-        assertNoOrEmptyResult(context.sleep(context.genericGroupInitialRebalanceDelayMs));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupInitialRebalanceDelayMs));
 
-        assertTrue(joinFuture.isDone());
-        assertEquals(Errors.NONE.code(), joinFuture.get().errorCode());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertEquals(1, group.generationId());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
 
-        assertEquals(0, group.allMembers().stream().filter(GenericGroupMember::isNew).count());
+        assertEquals(0, group.allMembers().stream().filter(ClassicGroupMember::isNew).count());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(joinFuture.get().memberId())
-            .withGenerationId(joinFuture.get().generationId())
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(joinResult.joinFuture.get().memberId())
+                .withGenerationId(joinResult.joinFuture.get().generationId())
+                .build()
+        );
 
         // Simulate a successful write to the log.
         syncResult.appendFuture.complete(null);
@@ -5875,12 +5207,12 @@ public class GroupMetadataManagerTest {
         assertEquals(1, group.size());
 
         // Make sure the NewMemberTimeout is not still in effect, and the member is not kicked
-        assertNoOrEmptyResult(context.sleep(context.genericGroupNewMemberJoinTimeoutMs));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(context.classicGroupNewMemberJoinTimeoutMs));
         assertEquals(1, group.size());
 
         // Member should be removed as heartbeat expires. The group is now empty.
         List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(5000);
-        List<Record> expectedRecords = Collections.singletonList(newGroupMetadataRecord(
+        List<Record> expectedRecords = Collections.singletonList(GroupMetadataManagerTestContext.newGroupMetadataRecord(
             group.groupId(),
             new GroupMetadataValue()
                 .setMembers(Collections.emptyList())
@@ -5889,12 +5221,13 @@ public class GroupMetadataManagerTest {
                 .setProtocolType("consumer")
                 .setProtocol(null)
                 .setCurrentStateTimestamp(context.time.milliseconds()),
-            MetadataVersion.latest()));
+            MetadataVersion.latestTesting())
+        );
 
         assertEquals(1, timeouts.size());
-        String memberId = joinFuture.get().memberId();
+        String memberId = joinResult.joinFuture.get().memberId();
         timeouts.forEach(timeout -> {
-            assertEquals(genericGroupHeartbeatKey("group-id", memberId), timeout.key);
+            assertEquals(classicGroupHeartbeatKey("group-id", memberId), timeout.key);
             assertEquals(expectedRecords, timeout.result.records());
         });
 
@@ -5908,12 +5241,11 @@ public class GroupMetadataManagerTest {
         // to expiration if the rebalance took long enough. This test case ensures
         // that following completion of the JoinGroup phase, new members follow
         // normal heartbeat expiration logic.
-
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -5921,20 +5253,20 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(10000)
             .build();
 
-        JoinGroupResponseData joinResponse = context.joinGenericGroupAndCompleteJoin(joinRequest, false, false);
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAndCompleteJoin(joinRequest, false, false);
         assertEquals(Errors.NONE.code(), joinResponse.errorCode());
 
         String memberId = joinResponse.memberId();
         assertEquals(memberId, joinResponse.leader());
         assertEquals(1, joinResponse.generationId());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(memberId)
-            .withGenerationId(1)
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(memberId)
+                .withGenerationId(1)
+                .build()
+        );
 
         // Simulate a successful write to the log.
         syncResult.appendFuture.complete(null);
@@ -5945,22 +5277,15 @@ public class GroupMetadataManagerTest {
         assertTrue(group.isInState(STABLE));
         assertEquals(1, group.generationId());
 
-        CompletableFuture<JoinGroupResponseData> otherJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> otherJoinResult = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(UNKNOWN_MEMBER_ID),
-            otherJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult otherJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(UNKNOWN_MEMBER_ID));
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(memberId));
 
-        CompletableFuture<JoinGroupResponseData> joinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> joinResult = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(memberId),
-            joinFuture);
-
-        assertTrue(otherJoinResult.records().isEmpty());
-        assertTrue(joinResult.records().isEmpty());
-        assertTrue(joinFuture.isDone());
-        assertTrue(otherJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), joinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), otherJoinFuture.get().errorCode());
+        assertTrue(otherJoinResult.records.isEmpty());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertTrue(otherJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), otherJoinResult.joinFuture.get().errorCode());
 
         context.verifySessionExpiration(group, 5000);
     }
@@ -5969,44 +5294,45 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberFenceDuplicateRejoinedFollower() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A third member joins. Trigger a rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        context.sendGenericGroupJoin(request, new CompletableFuture<>());
+        context.sendClassicGroupJoin(request);
 
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
         // Old follower rejoins group will be matching current member.id.
-        CompletableFuture<JoinGroupResponseData> oldFollowerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult oldFollowerJoinResult = context.sendClassicGroupJoin(
             request
                 .setMemberId(rebalanceResult.followerId)
-                .setGroupInstanceId("follower-instance-id"),
-            oldFollowerJoinFuture);
+                .setGroupInstanceId("follower-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(oldFollowerJoinFuture.isDone());
+        assertTrue(oldFollowerJoinResult.records.isEmpty());
+        assertFalse(oldFollowerJoinResult.joinFuture.isDone());
 
         // Duplicate follower joins group with unknown member id will trigger member id replacement.
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(UNKNOWN_MEMBER_ID).setGroupInstanceId("follower-instance-id"),
-            new CompletableFuture<>());
+        context.sendClassicGroupJoin(
+            request
+                .setMemberId(UNKNOWN_MEMBER_ID)
+                .setGroupInstanceId("follower-instance-id")
+        );
 
         // Old member shall be fenced immediately upon duplicate follower joins.
-        assertTrue(result.records().isEmpty());
-        assertTrue(oldFollowerJoinFuture.isDone());
+        assertTrue(oldFollowerJoinResult.records.isEmpty());
+        assertTrue(oldFollowerJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.FENCED_INSTANCE_ID.code())
@@ -6018,7 +5344,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedResponse,
-            oldFollowerJoinFuture.get(),
+            oldFollowerJoinResult.joinFuture.get(),
             group,
             PREPARING_REBALANCE,
             Collections.emptySet()
@@ -6029,16 +5355,16 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberFenceDuplicateSyncingFollowerAfterMemberIdChanged() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // Known leader rejoins will trigger rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
@@ -6046,22 +5372,22 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(10000)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, leaderJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(leaderJoinFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertFalse(leaderJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
         // Old follower rejoins group will match current member.id.
-        CompletableFuture<JoinGroupResponseData> oldFollowerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-                request.setMemberId(rebalanceResult.followerId).setGroupInstanceId("follower-instance-id"),
-                oldFollowerJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult oldFollowerJoinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(rebalanceResult.followerId)
+                .setGroupInstanceId("follower-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(oldFollowerJoinFuture.isDone());
-        assertTrue(leaderJoinFuture.isDone());
+        assertTrue(oldFollowerJoinResult.records.isEmpty());
+        assertTrue(oldFollowerJoinResult.joinFuture.isDone());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedLeaderResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
@@ -6074,61 +5400,62 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedLeaderResponse,
-            leaderJoinFuture.get(),
+            leaderJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             mkSet("leader-instance-id", "follower-instance-id")
         );
 
-        assertEquals(rebalanceResult.leaderId, leaderJoinFuture.get().memberId());
-        assertEquals(rebalanceResult.leaderId, leaderJoinFuture.get().leader());
+        assertEquals(rebalanceResult.leaderId, leaderJoinResult.joinFuture.get().memberId());
+        assertEquals(rebalanceResult.leaderId, leaderJoinResult.joinFuture.get().leader());
 
         // Old follower should get a successful join group response.
-        assertTrue(oldFollowerJoinFuture.isDone());
+        assertTrue(oldFollowerJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedFollowerResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 1)
-            .setMemberId(oldFollowerJoinFuture.get().memberId())
+            .setMemberId(oldFollowerJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer");
 
         checkJoinGroupResponse(
             expectedFollowerResponse,
-            oldFollowerJoinFuture.get(),
+            oldFollowerJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             Collections.emptySet()
         );
 
         assertTrue(group.isInState(COMPLETING_REBALANCE));
-        assertEquals(rebalanceResult.followerId, oldFollowerJoinFuture.get().memberId());
-        assertEquals(rebalanceResult.leaderId, oldFollowerJoinFuture.get().leader());
+        assertEquals(rebalanceResult.followerId, oldFollowerJoinResult.joinFuture.get().memberId());
+        assertEquals(rebalanceResult.leaderId, oldFollowerJoinResult.joinFuture.get().leader());
 
         // Duplicate follower joins group with unknown member id will trigger member.id replacement,
         // and will also trigger a rebalance under CompletingRebalance state; the old follower sync callback
         // will return fenced exception while broker replaces the member identity with the duplicate follower joins.
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withGroupInstanceId("follower-instance-id")
-            .withGenerationId(oldFollowerJoinFuture.get().generationId())
-            .withMemberId(oldFollowerJoinFuture.get().memberId())
-            .build();
+        GroupMetadataManagerTestContext.SyncResult oldFollowerSyncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withGroupInstanceId("follower-instance-id")
+                .withGenerationId(oldFollowerJoinResult.joinFuture.get().generationId())
+                .withMemberId(oldFollowerJoinResult.joinFuture.get().memberId())
+                .build()
+        );
 
-        SyncResult oldFollowerSyncResult = context.sendGenericGroupSync(syncRequest);
-
-        assertTrue(result.records().isEmpty());
+        assertTrue(oldFollowerSyncResult.records.isEmpty());
         assertFalse(oldFollowerSyncResult.syncFuture.isDone());
 
-        CompletableFuture<JoinGroupResponseData> duplicateFollowerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(UNKNOWN_MEMBER_ID).setGroupInstanceId("follower-instance-id"),
-            duplicateFollowerJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult duplicateFollowerJoinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(UNKNOWN_MEMBER_ID)
+                .setGroupInstanceId("follower-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
+        assertTrue(duplicateFollowerJoinResult.records.isEmpty());
         assertTrue(group.isInState(PREPARING_REBALANCE));
-        assertFalse(duplicateFollowerJoinFuture.isDone());
+        assertFalse(duplicateFollowerJoinResult.joinFuture.isDone());
         assertTrue(oldFollowerSyncResult.syncFuture.isDone());
         assertEquals(Errors.FENCED_INSTANCE_ID.code(), oldFollowerSyncResult.syncFuture.get().errorCode());
 
@@ -6138,28 +5465,28 @@ public class GroupMetadataManagerTest {
         assertEquals(2, timeouts.size());
         timeouts.forEach(timeout -> assertEquals(timeout.result, EMPTY_RESULT));
 
-        assertTrue(duplicateFollowerJoinFuture.isDone());
+        assertTrue(duplicateFollowerJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(3, group.generationId());
         assertEquals(1, group.size());
-        assertTrue(group.hasMemberId(duplicateFollowerJoinFuture.get().memberId()));
-        assertEquals(duplicateFollowerJoinFuture.get().memberId(), duplicateFollowerJoinFuture.get().leader());
+        assertTrue(group.hasMemberId(duplicateFollowerJoinResult.joinFuture.get().memberId()));
+        assertEquals(duplicateFollowerJoinResult.joinFuture.get().memberId(), duplicateFollowerJoinResult.joinFuture.get().leader());
     }
 
     @Test
     public void testStaticMemberFenceDuplicateRejoiningFollowerAfterMemberIdChanged() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // Known leader rejoins will trigger rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
@@ -6167,31 +5494,30 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(10000)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, leaderJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(leaderJoinFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertFalse(leaderJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
         // Duplicate follower joins group will trigger member id replacement.
-        CompletableFuture<JoinGroupResponseData> duplicateFollowerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(UNKNOWN_MEMBER_ID).setGroupInstanceId("follower-instance-id"),
-            duplicateFollowerJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult duplicateFollowerJoinResult = context.sendClassicGroupJoin(
+            request
+                .setMemberId(UNKNOWN_MEMBER_ID)
+                .setGroupInstanceId("follower-instance-id")
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(duplicateFollowerJoinFuture.isDone());
+        assertTrue(duplicateFollowerJoinResult.records.isEmpty());
+        assertTrue(duplicateFollowerJoinResult.joinFuture.isDone());
 
         // Old follower rejoins group will fail because member id is already updated.
-        CompletableFuture<JoinGroupResponseData> oldFollowerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setMemberId(rebalanceResult.followerId),
-            oldFollowerJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult oldFollowerJoinResult = context.sendClassicGroupJoin(
+            request.setMemberId(rebalanceResult.followerId)
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(oldFollowerJoinFuture.isDone());
-        assertTrue(leaderJoinFuture.isDone());
+        assertTrue(oldFollowerJoinResult.records.isEmpty());
+        assertTrue(oldFollowerJoinResult.joinFuture.isDone());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedLeaderResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
@@ -6204,18 +5530,18 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedLeaderResponse,
-            leaderJoinFuture.get(),
+            leaderJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             mkSet("leader-instance-id", "follower-instance-id")
         );
 
-        assertTrue(duplicateFollowerJoinFuture.isDone());
+        assertTrue(duplicateFollowerJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedDuplicateFollowerResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 1)
-            .setMemberId(duplicateFollowerJoinFuture.get().memberId())
+            .setMemberId(duplicateFollowerJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -6223,13 +5549,13 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedDuplicateFollowerResponse,
-            duplicateFollowerJoinFuture.get(),
+            duplicateFollowerJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             Collections.emptySet()
         );
 
-        assertTrue(duplicateFollowerJoinFuture.isDone());
+        assertTrue(duplicateFollowerJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedOldFollowerResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.FENCED_INSTANCE_ID.code())
@@ -6242,7 +5568,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedOldFollowerResponse,
-            oldFollowerJoinFuture.get(),
+            oldFollowerJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             Collections.emptySet()
@@ -6253,39 +5579,38 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberRejoinWithKnownMemberId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withGroupInstanceId("group-instance-id")
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData joinResponse = context.joinGenericGroupAndCompleteJoin(request, false, false);
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAndCompleteJoin(request, false, false);
         assertEquals(Errors.NONE.code(), joinResponse.errorCode());
 
         String memberId = joinResponse.memberId();
 
-        CompletableFuture<JoinGroupResponseData> rejoinResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            request.setMemberId(memberId),
-            rejoinResponseFuture);
+        GroupMetadataManagerTestContext.JoinResult rejoinResult = context.sendClassicGroupJoin(
+            request.setMemberId(memberId)
+        );
 
         // The second join group should return immediately since we are using the same metadata during CompletingRebalance.
-        assertTrue(result.records().isEmpty());
+        assertTrue(rejoinResult.records.isEmpty());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
-        assertTrue(rejoinResponseFuture.isDone());
-        assertEquals(Errors.NONE.code(), rejoinResponseFuture.get().errorCode());
+        assertTrue(rejoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), rejoinResult.joinFuture.get().errorCode());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(memberId)
-            .withGenerationId(joinResponse.generationId())
-            .withGroupInstanceId("group-instance-id")
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(memberId)
+                .withGenerationId(joinResponse.generationId())
+                .withGroupInstanceId("group-instance-id")
+                .build()
+        );
 
         // Successful write to the log.
         syncResult.appendFuture.complete(null);
@@ -6302,40 +5627,39 @@ public class GroupMetadataManagerTest {
     ) throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A static leader rejoin with unknown id will not trigger rebalance, and no assignment will be returned.
         // As the group was in Stable state and the member id was updated, this will generate records.
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> joinResponseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
             joinRequest,
-            joinResponseFuture,
             true,
-            supportSkippingAssignment);
+            supportSkippingAssignment
+        );
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            joinResult.records
         );
         // Simulate a successful write to the log.
-        result.appendFuture().complete(null);
-        assertTrue(joinResponseFuture.isDone());
+        joinResult.appendFuture.complete(null);
+        assertTrue(joinResult.joinFuture.isDone());
 
         String leader = supportSkippingAssignment ?
-            joinResponseFuture.get().memberId() : rebalanceResult.leaderId;
+            joinResult.joinFuture.get().memberId() : rebalanceResult.leaderId;
 
         List<JoinGroupResponseMember> members = supportSkippingAssignment ?
             toJoinResponseMembers(group) : Collections.emptyList();
@@ -6343,7 +5667,7 @@ public class GroupMetadataManagerTest {
         JoinGroupResponseData expectedJoinResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId)
-            .setMemberId(joinResponseFuture.get().memberId())
+            .setMemberId(joinResult.joinFuture.get().memberId())
             .setLeader(leader)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -6352,42 +5676,41 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedJoinResponse,
-            joinResponseFuture.get(),
+            joinResult.joinFuture.get(),
             group,
             STABLE,
             supportSkippingAssignment ? mkSet("leader-instance-id", "follower-instance-id") : Collections.emptySet()
         );
 
-        CompletableFuture<JoinGroupResponseData> oldLeaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult oldLeaderJoinResult = context.sendClassicGroupJoin(
             joinRequest.setMemberId(rebalanceResult.leaderId),
-            oldLeaderJoinFuture,
             true,
-            supportSkippingAssignment);
+            supportSkippingAssignment
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(oldLeaderJoinFuture.isDone());
-        assertEquals(Errors.FENCED_INSTANCE_ID.code(), oldLeaderJoinFuture.get().errorCode());
+        assertTrue(oldLeaderJoinResult.records.isEmpty());
+        assertTrue(oldLeaderJoinResult.joinFuture.isDone());
+        assertEquals(Errors.FENCED_INSTANCE_ID.code(), oldLeaderJoinResult.joinFuture.get().errorCode());
 
         // Old leader will get fenced.
-        SyncGroupRequestData oldLeaderSyncRequest = new SyncGroupRequestBuilder()
+        SyncGroupRequestData oldLeaderSyncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withGenerationId(rebalanceResult.generationId)
             .withMemberId(rebalanceResult.leaderId)
             .build();
 
-        SyncResult oldLeaderSyncResult = context.sendGenericGroupSync(oldLeaderSyncRequest);
+        GroupMetadataManagerTestContext.SyncResult oldLeaderSyncResult = context.sendClassicGroupSync(oldLeaderSyncRequest);
 
-        assertTrue(result.records().isEmpty());
+        assertTrue(oldLeaderSyncResult.records.isEmpty());
         assertTrue(oldLeaderSyncResult.syncFuture.isDone());
         assertEquals(Errors.FENCED_INSTANCE_ID.code(), oldLeaderSyncResult.syncFuture.get().errorCode());
 
         // Calling sync on old leader id will fail because that leader id is no longer valid and replaced.
         SyncGroupRequestData newLeaderSyncRequest = oldLeaderSyncRequest.setGroupInstanceId(null);
-        SyncResult newLeaderSyncResult = context.sendGenericGroupSync(newLeaderSyncRequest);
+        GroupMetadataManagerTestContext.SyncResult newLeaderSyncResult = context.sendClassicGroupSync(newLeaderSyncRequest);
 
-        assertTrue(result.records().isEmpty());
+        assertTrue(newLeaderSyncResult.records.isEmpty());
         assertTrue(newLeaderSyncResult.syncFuture.isDone());
         assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), newLeaderSyncResult.syncFuture.get().errorCode());
     }
@@ -6396,16 +5719,16 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberRejoinWithLeaderIdAndKnownMemberId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // Known static leader rejoin will trigger rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
@@ -6413,7 +5736,7 @@ public class GroupMetadataManagerTest {
             .withRebalanceTimeoutMs(10000)
             .build();
 
-        JoinGroupResponseData joinResponse = context.joinGenericGroupAndCompleteJoin(request, true, true, 10000);
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAndCompleteJoin(request, true, true, 10000);
 
         // Follower's heartbeat expires as the leader rejoins.
         assertFalse(group.hasMemberId(rebalanceResult.followerId));
@@ -6440,59 +5763,56 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberRejoinWithLeaderIdAndUnexpectedDeadGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
-
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
         group.transitionTo(DEAD);
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> joinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, joinFuture, true, true);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true, true);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(joinFuture.isDone());
-        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE.code(), joinFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.COORDINATOR_NOT_AVAILABLE.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testStaticMemberRejoinWithLeaderIdAndUnexpectedEmptyGroup() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         group.transitionTo(PREPARING_REBALANCE);
         group.transitionTo(EMPTY);
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> joinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, joinFuture, true, true);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request, true, true);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(joinFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
@@ -6501,19 +5821,19 @@ public class GroupMetadataManagerTest {
         int sessionTimeoutMs = 15000;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id",
             rebalanceTimeoutMs,
             sessionTimeoutMs
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A static follower rejoin with changed protocol will trigger rebalance.
-        JoinGroupRequestProtocolCollection protocols = toProtocols("roundrobin");
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("roundrobin");
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(rebalanceResult.followerId)
@@ -6522,17 +5842,16 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(sessionTimeoutMs)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
 
         // Old leader hasn't joined in the meantime, triggering a re-election.
-        assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs));
 
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertTrue(group.hasStaticMember("leader-instance-id"));
         assertTrue(group.isLeader(rebalanceResult.followerId));
 
@@ -6547,7 +5866,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedResponse,
-            responseFuture.get(),
+            joinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             mkSet("leader-instance-id", "follower-instance-id")
@@ -6555,29 +5874,28 @@ public class GroupMetadataManagerTest {
     }
 
     @Test
-    public void testStaticMemberRejoinWithUnknownMemberIdAndChangeOfProtocolWithSelectedProtocolChanged()
-        throws Exception {
+    public void testStaticMemberRejoinWithUnknownMemberIdAndChangeOfProtocolWithSelectedProtocolChanged() throws Exception {
 
         int rebalanceTimeoutMs = 10000;
         int sessionTimeoutMs = 15000;
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id",
             rebalanceTimeoutMs,
             sessionTimeoutMs
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         assertNotEquals("roundrobin", group.selectProtocol());
 
         // A static follower rejoin with changed protocol will trigger rebalance.
-        JoinGroupRequestProtocolCollection protocols = toProtocols("roundrobin");
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("roundrobin");
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
@@ -6586,32 +5904,31 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(sessionTimeoutMs)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
-        assertTrue(result.records().isEmpty());
-        assertFalse(responseFuture.isDone());
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
         assertEquals("roundrobin", group.selectProtocol());
 
         // Old leader hasn't joined in the meantime, triggering a re-election.
-        assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs));
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get().errorCode());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs));
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertTrue(group.hasStaticMember("leader-instance-id"));
-        assertTrue(group.isLeader(responseFuture.get().memberId()));
-        assertNotEquals(rebalanceResult.followerId, responseFuture.get().memberId());
+        assertTrue(group.isLeader(joinResult.joinFuture.get().memberId()));
+        assertNotEquals(rebalanceResult.followerId, joinResult.joinFuture.get().memberId());
 
         JoinGroupResponseData expectedResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 1)
-            .setMemberId(responseFuture.get().memberId())
-            .setLeader(responseFuture.get().memberId())
+            .setMemberId(joinResult.joinFuture.get().memberId())
+            .setLeader(joinResult.joinFuture.get().memberId())
             .setProtocolName("roundrobin")
             .setProtocolType("consumer")
             .setMembers(toJoinResponseMembers(group));
 
         checkJoinGroupResponse(
             expectedResponse,
-            responseFuture.get(),
+            joinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             mkSet("leader-instance-id", "follower-instance-id")
@@ -6623,42 +5940,41 @@ public class GroupMetadataManagerTest {
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
-        JoinGroupRequestProtocolCollection protocols = toProtocols(group.selectProtocol());
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols(group.selectProtocol());
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocols(protocols)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(
             request,
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            followerJoinResult.records
         );
         // Simulate a failed write to the log.
-        result.appendFuture().completeExceptionally(Errors.MESSAGE_TOO_LARGE.exception());
-        assertTrue(followerJoinFuture.isDone());
+        followerJoinResult.appendFuture.completeExceptionally(Errors.MESSAGE_TOO_LARGE.exception());
+        assertTrue(followerJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.UNKNOWN_SERVER_ERROR.code())
             .setGenerationId(rebalanceResult.generationId)
-            .setMemberId(followerJoinFuture.get().memberId())
+            .setMemberId(followerJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -6667,48 +5983,45 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedResponse,
-            followerJoinFuture.get(),
+            followerJoinResult.joinFuture.get(),
             group,
             STABLE,
             Collections.emptySet()
         );
 
         // Join with old member id will not fail because the member id is not updated because of persistence failure
-        assertNotEquals(rebalanceResult.followerId, followerJoinFuture.get().memberId());
-        followerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(rebalanceResult.followerId), followerJoinFuture);
+        assertNotEquals(rebalanceResult.followerId, followerJoinResult.joinFuture.get().memberId());
+        followerJoinResult = context.sendClassicGroupJoin(request.setMemberId(rebalanceResult.followerId));
 
-        assertTrue(result.records().isEmpty());
+        assertTrue(followerJoinResult.records.isEmpty());
 
         // Join with leader and complete join phase.
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(
             request.setGroupInstanceId("leader-instance-id")
-                .setMemberId(rebalanceResult.leaderId),
-            leaderJoinFuture
+                .setMemberId(rebalanceResult.leaderId)
         );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
 
         // Sync with leader and receive assignment.
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
             .withGenerationId(rebalanceResult.generationId + 1)
             .build();
 
-        SyncResult leaderSyncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult leaderSyncResult = context.sendClassicGroupSync(syncRequest);
 
         // Simulate a successful write to the log. This will update the group with the new (empty) assignment.
         leaderSyncResult.appendFuture.complete(null);
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
             leaderSyncResult.records
         );
 
@@ -6716,13 +6029,13 @@ public class GroupMetadataManagerTest {
         assertTrue(group.isInState(STABLE));
         assertEquals(Errors.NONE.code(), leaderSyncResult.syncFuture.get().errorCode());
 
-        // Sync with old member id will also not fail because the member id is not updated because of persistence failure
-        SyncResult oldMemberSyncResult = context.sendGenericGroupSync(
+        // Sync with old member id will also not fail as the member id is not updated due to persistence failure
+        GroupMetadataManagerTestContext.SyncResult oldMemberSyncResult = context.sendClassicGroupSync(
             syncRequest
                 .setGroupInstanceId("follower-instance-id")
                 .setMemberId(rebalanceResult.followerId)
         );
-        assertTrue(result.records().isEmpty());
+        assertTrue(oldMemberSyncResult.records.isEmpty());
         assertTrue(oldMemberSyncResult.syncFuture.isDone());
         assertTrue(group.isInState(STABLE));
         assertEquals(Errors.NONE.code(), oldMemberSyncResult.syncFuture.get().errorCode());
@@ -6730,48 +6043,46 @@ public class GroupMetadataManagerTest {
 
     @Test
     public void testStaticMemberRejoinWithUnknownMemberIdAndChangeOfProtocolWhileSelectProtocolUnchanged() throws Exception {
-
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A static follower rejoin with protocol changing to leader protocol subset won't trigger rebalance if updated
         // group's selectProtocol remain unchanged.
-        JoinGroupRequestProtocolCollection protocols = toProtocols(group.selectProtocol());
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols(group.selectProtocol());
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocols(protocols)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(
             request,
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            followerJoinResult.records
         );
 
         // Simulate a successful write to the log.
-        result.appendFuture().complete(null);
-        assertTrue(followerJoinFuture.isDone());
+        followerJoinResult.appendFuture.complete(null);
+        assertTrue(followerJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId)
-            .setMemberId(followerJoinFuture.get().memberId())
+            .setMemberId(followerJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -6780,23 +6091,22 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedResponse,
-            followerJoinFuture.get(),
+            followerJoinResult.joinFuture.get(),
             group,
             STABLE,
             Collections.emptySet()
         );
 
         // Join with old member id will fail because the member id is updated
-        String newFollowerId = followerJoinFuture.get().memberId();
+        String newFollowerId = followerJoinResult.joinFuture.get().memberId();
         assertNotEquals(rebalanceResult.followerId, newFollowerId);
-        followerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(request.setMemberId(rebalanceResult.followerId), followerJoinFuture);
+        followerJoinResult = context.sendClassicGroupJoin(request.setMemberId(rebalanceResult.followerId));
 
-        assertTrue(result.records().isEmpty());
-        assertEquals(Errors.FENCED_INSTANCE_ID.code(), followerJoinFuture.get().errorCode());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertEquals(Errors.FENCED_INSTANCE_ID.code(), followerJoinResult.joinFuture.get().errorCode());
 
         // Sync with old member id will fail because the member id is updated
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withGenerationId(rebalanceResult.generationId)
@@ -6804,14 +6114,14 @@ public class GroupMetadataManagerTest {
             .withAssignment(Collections.emptyList())
             .build();
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(syncRequest);
 
         assertTrue(syncResult.records.isEmpty());
         assertTrue(syncResult.syncFuture.isDone());
         assertEquals(Errors.FENCED_INSTANCE_ID.code(), syncResult.syncFuture.get().errorCode());
 
         // Sync with new member id succeeds
-        syncResult = context.sendGenericGroupSync(syncRequest.setMemberId(newFollowerId));
+        syncResult = context.sendClassicGroupSync(syncRequest.setMemberId(newFollowerId));
 
         assertTrue(syncResult.records.isEmpty());
         assertTrue(syncResult.syncFuture.isDone());
@@ -6825,16 +6135,16 @@ public class GroupMetadataManagerTest {
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A static leader rejoin with known member id will trigger rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.leaderId)
@@ -6843,28 +6153,26 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(5000)
             .build();
 
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(
             request,
-            leaderJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(leaderJoinFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertFalse(leaderJoinResult.joinFuture.isDone());
 
         // Rebalance completes immediately after follower rejoins.
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(
             request.setGroupInstanceId("follower-instance-id")
                 .setMemberId(rebalanceResult.followerId),
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.generationId());
 
@@ -6872,7 +6180,7 @@ public class GroupMetadataManagerTest {
         JoinGroupResponseData expectedLeaderResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 1) // The group has promoted to the new generation.
-            .setMemberId(leaderJoinFuture.get().memberId())
+            .setMemberId(leaderJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -6881,7 +6189,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedLeaderResponse,
-            leaderJoinFuture.get(),
+            leaderJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             mkSet("leader-instance-id", "follower-instance-id")
@@ -6890,7 +6198,7 @@ public class GroupMetadataManagerTest {
         JoinGroupResponseData expectedFollowerResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 1) // The group has promoted to the new generation.
-            .setMemberId(followerJoinFuture.get().memberId())
+            .setMemberId(followerJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -6899,26 +6207,25 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedFollowerResponse,
-            followerJoinFuture.get(),
+            followerJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             Collections.emptySet()
         );
 
         // The follower protocol changed from protocolSuperset to general protocols.
-        JoinGroupRequestProtocolCollection protocols = toProtocols("range");
+        JoinGroupRequestProtocolCollection protocols = GroupMetadataManagerTestContext.toProtocols("range");
 
-        followerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
+        followerJoinResult = context.sendClassicGroupJoin(
             request.setGroupInstanceId("follower-instance-id")
                 .setMemberId(rebalanceResult.followerId)
                 .setProtocols(protocols),
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(followerJoinFuture.isDone());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertFalse(followerJoinResult.joinFuture.isDone());
         // The group will transition to PreparingRebalance due to protocol change from follower.
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
@@ -6927,9 +6234,9 @@ public class GroupMetadataManagerTest {
         // Both leader and follower heartbeat timers may expire. However, the follower heartbeat expiration
         // will not kick the follower out because it is awaiting a join response.
         assertTrue(timeouts.size() <= 2);
-        assertTrue(followerJoinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
 
-        String newFollowerId = followerJoinFuture.get().memberId();
+        String newFollowerId = followerJoinResult.joinFuture.get().memberId();
         expectedFollowerResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 2) // The group has promoted to the new generation.
@@ -6942,7 +6249,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedFollowerResponse,
-            followerJoinFuture.get(),
+            followerJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             Collections.singleton("follower-instance-id")
@@ -6953,37 +6260,36 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberRejoinAsFollowerWithUnknownMemberId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A static follower rejoin with no protocol change will not trigger rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(
             request,
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
         assertEquals(
-            Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-            result.records()
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            followerJoinResult.records
         );
         // Simulate a successful write to log.
-        result.appendFuture().complete(null);
+        followerJoinResult.appendFuture.complete(null);
 
-        assertTrue(followerJoinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
 
         // Old leader shouldn't be timed out.
         assertTrue(group.hasStaticMember("leader-instance-id"));
@@ -6991,7 +6297,7 @@ public class GroupMetadataManagerTest {
         JoinGroupResponseData expectedFollowerResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId) // The group has not changed.
-            .setMemberId(followerJoinFuture.get().memberId())
+            .setMemberId(followerJoinResult.joinFuture.get().memberId())
             .setLeader(rebalanceResult.leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -7000,21 +6306,21 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedFollowerResponse,
-            followerJoinFuture.get(),
+            followerJoinResult.joinFuture.get(),
             group,
             STABLE,
             Collections.emptySet()
         );
-        assertNotEquals(rebalanceResult.followerId, followerJoinFuture.get().memberId());
+        assertNotEquals(rebalanceResult.followerId, followerJoinResult.joinFuture.get().memberId());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withGroupInstanceId("follower-instance-id")
-            .withGenerationId(rebalanceResult.generationId)
-            .withMemberId(followerJoinFuture.get().memberId())
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withGroupInstanceId("follower-instance-id")
+                .withGenerationId(rebalanceResult.generationId)
+                .withMemberId(followerJoinResult.joinFuture.get().memberId())
+                .build()
+        );
 
         assertTrue(syncResult.records.isEmpty());
         assertTrue(syncResult.syncFuture.isDone());
@@ -7026,32 +6332,31 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberRejoinAsFollowerWithKnownMemberIdAndNoProtocolChange() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         // A static follower rejoin with no protocol change will not trigger rebalance.
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(rebalanceResult.followerId)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(
             request,
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
         // No records to write because no metadata changed.
-        assertTrue(result.records().isEmpty());
-        assertTrue(followerJoinFuture.isDone());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertTrue(followerJoinResult.joinFuture.isDone());
 
         // Old leader shouldn't be timed out.
         assertTrue(group.hasStaticMember("leader-instance-id"));
@@ -7068,7 +6373,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedFollowerResponse,
-            followerJoinFuture.get(),
+            followerJoinResult.joinFuture.get(),
             group,
             STABLE,
             Collections.emptySet()
@@ -7079,69 +6384,64 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberRejoinAsFollowerWithMismatchedInstanceId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(rebalanceResult.followerId)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(
             request,
-            followerJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.FENCED_INSTANCE_ID.code(), followerJoinFuture.get().errorCode());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.FENCED_INSTANCE_ID.code(), followerJoinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testStaticMemberRejoinAsLeaderWithMismatchedInstanceId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(rebalanceResult.leaderId)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(
             request,
-            leaderJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertEquals(Errors.FENCED_INSTANCE_ID.code(), leaderJoinFuture.get().errorCode());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertEquals(Errors.FENCED_INSTANCE_ID.code(), leaderJoinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testStaticMemberSyncAsLeaderWithInvalidMemberId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
 
         context.staticMembersJoinAndRebalance(
             "group-id",
@@ -7149,13 +6449,13 @@ public class GroupMetadataManagerTest {
             "follower-instance-id"
         );
 
-        SyncGroupRequestData request = new SyncGroupRequestBuilder()
+        SyncGroupRequestData request = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId("invalid-member-id")
             .build();
 
-        SyncResult leaderSyncResult = context.sendGenericGroupSync(request);
+        GroupMetadataManagerTestContext.SyncResult leaderSyncResult = context.sendClassicGroupSync(request);
 
         assertTrue(leaderSyncResult.records.isEmpty());
         assertTrue(leaderSyncResult.syncFuture.isDone());
@@ -7166,42 +6466,41 @@ public class GroupMetadataManagerTest {
     public void testGetDifferentStaticMemberIdAfterEachRejoin() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         String lastMemberId = rebalanceResult.leaderId;
         for (int i = 0; i < 5; i++) {
-            JoinGroupRequestData request = new JoinGroupRequestBuilder()
+            JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
                 .withGroupId("group-id")
                 .withGroupInstanceId("leader-instance-id")
                 .withMemberId(UNKNOWN_MEMBER_ID)
                 .withProtocolSuperset()
                 .build();
 
-            CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-            CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+            GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(
                 request,
-                leaderJoinFuture,
                 true,
-                true);
+                true
+            );
 
             assertEquals(
-                Collections.singletonList(newGroupMetadataRecord(group, MetadataVersion.latest())),
-                result.records()
+                Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+                leaderJoinResult.records
             );
             // Simulate a successful write to log.
-            result.appendFuture().complete(null);
-            assertTrue(leaderJoinFuture.isDone());
-            assertEquals(group.staticMemberId("leader-instance-id"), leaderJoinFuture.get().memberId());
-            assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-            assertNotEquals(lastMemberId, leaderJoinFuture.get().memberId());
+            leaderJoinResult.appendFuture.complete(null);
+            assertTrue(leaderJoinResult.joinFuture.isDone());
+            assertEquals(group.staticMemberId("leader-instance-id"), leaderJoinResult.joinFuture.get().memberId());
+            assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+            assertNotEquals(lastMemberId, leaderJoinResult.joinFuture.get().memberId());
 
-            lastMemberId = leaderJoinFuture.get().memberId();
+            lastMemberId = leaderJoinResult.joinFuture.get().memberId();
         }
     }
 
@@ -7209,49 +6508,47 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberJoinWithUnknownInstanceIdAndKnownMemberId() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
 
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("unknown-instance-id")
             .withMemberId(rebalanceResult.leaderId)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> joinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
             request,
-            joinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(joinFuture.isDone());
-        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), joinResult.joinFuture.get().errorCode());
     }
 
     @Test
     public void testStaticMemberReJoinWithIllegalStateAsUnknownMember() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
         context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id"
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         group.transitionTo(PREPARING_REBALANCE);
         group.transitionTo(EMPTY);
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("follower-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
@@ -7259,11 +6556,11 @@ public class GroupMetadataManagerTest {
             .build();
 
         // Illegal state exception shall trigger since follower id resides in pending member bucket.
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> context.sendGenericGroupJoin(
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> context.sendClassicGroupJoin(
             request,
-            new CompletableFuture<>(),
             true,
-            true));
+            true
+        ));
 
         String message = exception.getMessage();
         assertTrue(message.contains(group.groupId()));
@@ -7274,54 +6571,53 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberFollowerFailToRejoinBeforeRebalanceTimeout() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
         // Increase session timeout so that the follower won't be evicted when rebalance timeout is reached.
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id",
             10000,
             15000
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         String newMemberInstanceId = "new-member-instance-id";
         String leaderId = rebalanceResult.leaderId;
 
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId(newMemberInstanceId)
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> newMemberFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult newMemberJoinResult = context.sendClassicGroupJoin(
             request,
-            newMemberFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(newMemberFuture.isDone());
+        assertTrue(newMemberJoinResult.records.isEmpty());
+        assertFalse(newMemberJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setGroupInstanceId("leader-instance-id")
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(
+            request
+                .setGroupInstanceId("leader-instance-id")
                 .setMemberId(leaderId),
-            leaderJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(leaderJoinFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertFalse(leaderJoinResult.joinFuture.isDone());
 
         // Advance clock by rebalance timeout to complete join phase.
-        assertNoOrEmptyResult(context.sleep(10000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(10000));
 
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(newMemberFuture.isDone());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(newMemberJoinResult.joinFuture.isDone());
 
         JoinGroupResponseData expectedLeaderResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
@@ -7335,7 +6631,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedLeaderResponse,
-            leaderJoinFuture.get(),
+            leaderJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             mkSet("leader-instance-id", "follower-instance-id", newMemberInstanceId)
@@ -7344,7 +6640,7 @@ public class GroupMetadataManagerTest {
         JoinGroupResponseData expectedNewMemberResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
             .setGenerationId(rebalanceResult.generationId + 1)
-            .setMemberId(newMemberFuture.get().memberId())
+            .setMemberId(newMemberJoinResult.joinFuture.get().memberId())
             .setLeader(leaderId)
             .setProtocolName("range")
             .setProtocolType("consumer")
@@ -7353,7 +6649,7 @@ public class GroupMetadataManagerTest {
 
         checkJoinGroupResponse(
             expectedNewMemberResponse,
-            newMemberFuture.get(),
+            newMemberJoinResult.joinFuture.get(),
             group,
             COMPLETING_REBALANCE,
             Collections.emptySet()
@@ -7364,58 +6660,60 @@ public class GroupMetadataManagerTest {
     public void testStaticMemberLeaderFailToRejoinBeforeRebalanceTimeout() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
 
         // Increase session timeout so that the leader won't be evicted when rebalance timeout is reached.
-        RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
             "group-id",
             "leader-instance-id",
             "follower-instance-id",
             10000,
             15000
         );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
         String newMemberInstanceId = "new-member-instance-id";
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId(newMemberInstanceId)
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> newMemberFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
+        GroupMetadataManagerTestContext.JoinResult newMemberJoinResult = context.sendClassicGroupJoin(
             request,
-            newMemberFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(newMemberFuture.isDone());
+        assertTrue(newMemberJoinResult.records.isEmpty());
+        assertFalse(newMemberJoinResult.joinFuture.isDone());
         assertTrue(group.isInState(PREPARING_REBALANCE));
 
-        CompletableFuture<JoinGroupResponseData> oldFollowerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            request.setGroupInstanceId("follower-instance-id")
+        GroupMetadataManagerTestContext.JoinResult oldFollowerJoinResult = context.sendClassicGroupJoin(
+            request
+                .setGroupInstanceId("follower-instance-id")
                 .setMemberId(rebalanceResult.followerId),
-            oldFollowerJoinFuture,
             true,
-            true);
+            true
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(oldFollowerJoinFuture.isDone());
+        assertTrue(oldFollowerJoinResult.records.isEmpty());
+        assertFalse(oldFollowerJoinResult.joinFuture.isDone());
 
         // Advance clock by rebalance timeout to complete join phase.
-        assertNoOrEmptyResult(context.sleep(10000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(10000));
 
-        assertTrue(oldFollowerJoinFuture.isDone());
-        assertTrue(newMemberFuture.isDone());
+        assertTrue(oldFollowerJoinResult.joinFuture.isDone());
+        assertTrue(newMemberJoinResult.joinFuture.isDone());
 
-        JoinGroupResponseData newLeaderResponse = oldFollowerJoinFuture.get().leader()
-            .equals(oldFollowerJoinFuture.get().memberId()) ? oldFollowerJoinFuture.get() : newMemberFuture.get();
+        JoinGroupResponseData oldFollowerJoinResponse = oldFollowerJoinResult.joinFuture.get();
+        JoinGroupResponseData newMemberJoinResponse = newMemberJoinResult.joinFuture.get();
 
-        JoinGroupResponseData newFollowerResponse = oldFollowerJoinFuture.get().leader()
-            .equals(oldFollowerJoinFuture.get().memberId()) ? newMemberFuture.get() : oldFollowerJoinFuture.get();
+        JoinGroupResponseData newLeaderResponse = oldFollowerJoinResponse.leader()
+            .equals(oldFollowerJoinResponse.memberId()) ? oldFollowerJoinResponse : newMemberJoinResponse;
+
+        JoinGroupResponseData newFollowerResponse = oldFollowerJoinResponse.leader()
+            .equals(oldFollowerJoinResponse.memberId()) ? newMemberJoinResponse : oldFollowerJoinResponse;
 
         JoinGroupResponseData expectedLeaderResponse = new JoinGroupResponseData()
             .setErrorCode(Errors.NONE.code())
@@ -7507,44 +6805,42 @@ public class GroupMetadataManagerTest {
     ) throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
         // JoinGroup(leader) with the Protocol Type of the group
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withProtocolSuperset()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(joinRequest, leaderJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(joinRequest);
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(leaderJoinFuture.isDone());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertFalse(leaderJoinResult.joinFuture.isDone());
 
         // JoinGroup(follower) with the Protocol Type of the group
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(joinRequest.setGroupInstanceId("follower-instance-id"), followerJoinFuture);
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(joinRequest.setGroupInstanceId("follower-instance-id"));
 
-        assertTrue(result.records().isEmpty());
-        assertFalse(followerJoinFuture.isDone());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertFalse(followerJoinResult.joinFuture.isDone());
 
         // Advance clock by rebalance timeout to complete join phase.
-        assertNoOrEmptyResult(context.sleep(10000));
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(10000));
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
 
-        String leaderId = leaderJoinFuture.get().memberId();
-        String followerId = followerJoinFuture.get().memberId();
-        int generationId = leaderJoinFuture.get().generationId();
+        String leaderId = leaderJoinResult.joinFuture.get().memberId();
+        String followerId = followerJoinResult.joinFuture.get().memberId();
+        int generationId = leaderJoinResult.joinFuture.get().generationId();
 
         // SyncGroup with the provided Protocol Type and Name
         List<SyncGroupRequestAssignment> assignment = new ArrayList<>();
         assignment.add(new SyncGroupRequestAssignment().setMemberId(leaderId));
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(leaderId)
             .withProtocolType(protocolType.orElse(null))
@@ -7553,7 +6849,7 @@ public class GroupMetadataManagerTest {
             .withAssignment(assignment)
             .build();
 
-        SyncResult leaderSyncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult leaderSyncResult = context.sendClassicGroupSync(syncRequest);
         // Simulate a successful write to the log.
         leaderSyncResult.appendFuture.complete(null);
 
@@ -7562,7 +6858,7 @@ public class GroupMetadataManagerTest {
         assertEquals(expectedProtocolType.orElse(null), leaderSyncResult.syncFuture.get().protocolType());
         assertEquals(expectedProtocolName.orElse(null), leaderSyncResult.syncFuture.get().protocolName());
 
-        SyncResult followerSyncResult = context.sendGenericGroupSync(syncRequest.setMemberId(followerId));
+        GroupMetadataManagerTestContext.SyncResult followerSyncResult = context.sendClassicGroupSync(syncRequest.setMemberId(followerId));
 
         assertTrue(followerSyncResult.records.isEmpty());
         assertTrue(followerSyncResult.syncFuture.isDone());
@@ -7577,13 +6873,13 @@ public class GroupMetadataManagerTest {
             .build();
 
         // SyncGroup with the provided Protocol Type and Name
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId("member-id")
-            .withGenerationId(1)
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId("member-id")
+                .withGenerationId(1)
+                .build()
+        );
 
         assertTrue(syncResult.records.isEmpty());
         assertTrue(syncResult.syncFuture.isDone());
@@ -7594,30 +6890,32 @@ public class GroupMetadataManagerTest {
     public void testSyncGroupFromUnknownMember() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withGroupInstanceId("leader-instance-id")
-            .withMemberId(UNKNOWN_MEMBER_ID)
-            .withDefaultProtocolTypeAndProtocols()
-            .build();
-
-        JoinGroupResponseData joinResponse = context.joinGenericGroupAndCompleteJoin(joinRequest, true, true);
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAndCompleteJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withGroupInstanceId("leader-instance-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .build(),
+            true,
+            true
+        );
 
         String memberId = joinResponse.memberId();
         int generationId = joinResponse.generationId();
 
         List<SyncGroupRequestAssignment> assignment = new ArrayList<>();
         assignment.add(new SyncGroupRequestAssignment().setMemberId(memberId));
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(memberId)
             .withGenerationId(generationId)
             .withAssignment(assignment)
             .build();
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(syncRequest);
 
         // Simulate a successful write to log.
         syncResult.appendFuture.complete(null);
@@ -7626,40 +6924,41 @@ public class GroupMetadataManagerTest {
         assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
         assertEquals(assignment.get(0).assignment(), syncResult.syncFuture.get().assignment());
 
-        syncResult = context.sendGenericGroupSync(syncRequest.setMemberId("unknown-member-id"));
+        // Sync with unknown member.
+        syncResult = context.sendClassicGroupSync(syncRequest.setMemberId("unknown-member-id"));
 
         assertTrue(syncResult.records.isEmpty());
         assertTrue(syncResult.syncFuture.isDone());
         assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), syncResult.syncFuture.get().errorCode());
-        assertEquals(GenericGroupMember.EMPTY_ASSIGNMENT, syncResult.syncFuture.get().assignment());
+        assertEquals(ClassicGroupMember.EMPTY_ASSIGNMENT, syncResult.syncFuture.get().assignment());
     }
 
     @Test
     public void testSyncGroupFromIllegalGeneration() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        context.createClassicGroup("group-id");
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withGroupInstanceId("leader-instance-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData joinResponse = context.joinGenericGroupAndCompleteJoin(joinRequest, true, true);
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAndCompleteJoin(joinRequest, true, true);
 
         String memberId = joinResponse.memberId();
         int generationId = joinResponse.generationId();
 
         // Send the sync group with an invalid generation
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(memberId)
-            .withGenerationId(generationId + 1)
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(memberId)
+                .withGenerationId(generationId + 1)
+                .build()
+        );
 
         assertTrue(syncResult.records.isEmpty());
         assertTrue(syncResult.syncFuture.isDone());
@@ -7667,79 +6966,78 @@ public class GroupMetadataManagerTest {
     }
 
     @Test
+    public void testSyncGroupAsLeaderAppendFailureTransformsError() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.createClassicGroup("group-id");
+
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withGroupInstanceId("leader-instance-id")
+            .withMemberId(UNKNOWN_MEMBER_ID)
+            .withDefaultProtocolTypeAndProtocols()
+            .build();
+
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAndCompleteJoin(joinRequest, true, true);
+
+        // Send the sync group with an invalid generation
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(joinResponse.memberId())
+                .withGenerationId(1)
+                .build()
+        );
+
+        assertFalse(syncResult.syncFuture.isDone());
+
+        // Simulate a failed write to the log.
+        syncResult.appendFuture.completeExceptionally(new NotLeaderOrFollowerException());
+        assertTrue(syncResult.syncFuture.isDone());
+        assertEquals(Errors.NOT_COORDINATOR.code(), syncResult.syncFuture.get().errorCode());
+    }
+
+    @Test
     public void testJoinGroupFromUnchangedFollowerDoesNotRebalance() throws Exception {
         // To get a group of two members:
         // 1. join and sync with a single member (because we can't immediately join with two members)
         // 2. join and sync with the first member and a new member
-
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        JoinGroupResponseData leaderJoinResponse =
-            context.joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(joinRequest);
 
-        String leaderId = leaderJoinResponse.memberId();
-        int generationId = leaderJoinResponse.generationId();
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertFalse(followerJoinResult.joinFuture.isDone());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(leaderId)
-            .withGenerationId(generationId)
-            .build();
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(leaderJoinResponse.memberId()));
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
+        assertEquals(leaderJoinResult.joinFuture.get().generationId(), followerJoinResult.joinFuture.get().generationId());
+        assertEquals(leaderJoinResponse.memberId(), leaderJoinResult.joinFuture.get().leader());
+        assertEquals(leaderJoinResponse.memberId(), followerJoinResult.joinFuture.get().leader());
 
-        // Simulate a successful write to log.
-        syncResult.appendFuture.complete(null);
-
-        assertTrue(syncResult.syncFuture.isDone());
-        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
-
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(UNKNOWN_MEMBER_ID),
-            followerJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertFalse(followerJoinFuture.isDone());
-
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(leaderId),
-            leaderJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
-        assertEquals(leaderJoinFuture.get().generationId(), followerJoinFuture.get().generationId());
-        assertEquals(leaderId, leaderJoinFuture.get().leader());
-        assertEquals(leaderId, followerJoinFuture.get().leader());
-
-        int nextGenerationId = leaderJoinFuture.get().generationId();
-        String followerId = followerJoinFuture.get().memberId();
+        int nextGenerationId = leaderJoinResult.joinFuture.get().generationId();
+        String followerId = followerJoinResult.joinFuture.get().memberId();
 
         // This shouldn't cause a rebalance since protocol information hasn't changed
-        followerJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(followerId),
-            followerJoinFuture
-        );
+        followerJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(followerId));
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
-        assertEquals(nextGenerationId, followerJoinFuture.get().generationId());
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
+        assertEquals(nextGenerationId, followerJoinResult.joinFuture.get().generationId());
     }
 
     @Test
@@ -7750,9 +7048,10 @@ public class GroupMetadataManagerTest {
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -7760,58 +7059,33 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(5000)
             .build();
 
-        JoinGroupResponseData leaderJoinResponse =
-            context.joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(joinRequest);
 
-        String leaderId = leaderJoinResponse.memberId();
-        int generationId = leaderJoinResponse.generationId();
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertFalse(followerJoinResult.joinFuture.isDone());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(leaderId)
-            .withGenerationId(generationId)
-            .build();
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(leaderJoinResponse.memberId()));
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
-
-        // Simulate a successful write to log.
-        syncResult.appendFuture.complete(null);
-
-        assertTrue(syncResult.syncFuture.isDone());
-        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
-
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(UNKNOWN_MEMBER_ID),
-            followerJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertFalse(followerJoinFuture.isDone());
-
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(leaderId),
-            leaderJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
-        assertEquals(leaderJoinFuture.get().generationId(), followerJoinFuture.get().generationId());
-        assertEquals(leaderId, leaderJoinFuture.get().leader());
-        assertEquals(leaderId, followerJoinFuture.get().leader());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
+        assertEquals(leaderJoinResult.joinFuture.get().generationId(), followerJoinResult.joinFuture.get().generationId());
+        assertEquals(leaderJoinResponse.memberId(), leaderJoinResult.joinFuture.get().leader());
+        assertEquals(leaderJoinResponse.memberId(), followerJoinResult.joinFuture.get().leader());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
 
-        int nextGenerationId = leaderJoinFuture.get().generationId();
-        String followerId = followerJoinFuture.get().memberId();
+        int nextGenerationId = leaderJoinResult.joinFuture.get().generationId();
+        String followerId = followerJoinResult.joinFuture.get().memberId();
 
         // With no leader SyncGroup, the follower's sync request should fail with an error indicating
         // that it should rejoin
-        SyncResult followerSyncResult = context.sendGenericGroupSync(syncRequest.setMemberId(followerId)
-            .setGenerationId(nextGenerationId));
+        GroupMetadataManagerTestContext.SyncResult followerSyncResult = context.sendClassicGroupSync(new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(followerId)
+            .withGenerationId(nextGenerationId)
+            .build());
 
         assertTrue(followerSyncResult.records.isEmpty());
         assertFalse(followerSyncResult.syncFuture.isDone());
@@ -7835,12 +7109,12 @@ public class GroupMetadataManagerTest {
         // To get a group of two members:
         // 1. join and sync with a single member (because we can't immediately join with two members)
         // 2. join and sync with the first member and a new member
-
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -7848,60 +7122,32 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(5000)
             .build();
 
-        JoinGroupResponseData leaderJoinResponse =
-            context.joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(UNKNOWN_MEMBER_ID));
 
-        String leaderId = leaderJoinResponse.memberId();
-        int generationId = leaderJoinResponse.generationId();
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertFalse(followerJoinResult.joinFuture.isDone());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(leaderId)
-            .withGenerationId(generationId)
-            .build();
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(leaderJoinResponse.memberId()));
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
-
-        // Simulate a successful write to log.
-        syncResult.appendFuture.complete(null);
-
-        assertTrue(syncResult.syncFuture.isDone());
-        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
-
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(UNKNOWN_MEMBER_ID),
-            followerJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertFalse(followerJoinFuture.isDone());
-
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(leaderId),
-            leaderJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
-        assertEquals(leaderJoinFuture.get().generationId(), followerJoinFuture.get().generationId());
-        assertEquals(leaderId, leaderJoinFuture.get().leader());
-        assertEquals(leaderId, followerJoinFuture.get().leader());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
+        assertEquals(leaderJoinResult.joinFuture.get().generationId(), followerJoinResult.joinFuture.get().generationId());
+        assertEquals(leaderJoinResponse.memberId(), leaderJoinResult.joinFuture.get().leader());
+        assertEquals(leaderJoinResponse.memberId(), followerJoinResult.joinFuture.get().leader());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
 
-        int nextGenerationId = leaderJoinFuture.get().generationId();
-        String followerId = followerJoinFuture.get().memberId();
+        int nextGenerationId = leaderJoinResult.joinFuture.get().generationId();
+        String followerId = followerJoinResult.joinFuture.get().memberId();
         byte[] leaderAssignment = new byte[]{0};
         byte[] followerAssignment = new byte[]{1};
 
         // Sync group with leader to get new assignment.
         List<SyncGroupRequestAssignment> assignment = new ArrayList<>();
         assignment.add(new SyncGroupRequestAssignment()
-            .setMemberId(leaderId)
+            .setMemberId(leaderJoinResponse.memberId())
             .setAssignment(leaderAssignment)
         );
         assignment.add(new SyncGroupRequestAssignment()
@@ -7909,8 +7155,16 @@ public class GroupMetadataManagerTest {
             .setAssignment(followerAssignment)
         );
 
-        syncResult = context.sendGenericGroupSync(syncRequest.setGenerationId(nextGenerationId)
-            .setAssignments(assignment));
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(leaderJoinResponse.memberId())
+            .withGenerationId(leaderJoinResponse.generationId())
+            .withAssignment(assignment)
+            .build();
+
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            syncRequest.setGenerationId(nextGenerationId)
+        );
 
         // Simulate a successful write to log. This will update the group's assignment with the new assignment.
         syncResult.appendFuture.complete(null);
@@ -7920,8 +7174,11 @@ public class GroupMetadataManagerTest {
         assertEquals(leaderAssignment, syncResult.syncFuture.get().assignment());
 
         // Sync group with follower to get new assignment.
-        SyncResult followerSyncResult = context.sendGenericGroupSync(syncRequest.setMemberId(followerId)
-            .setGenerationId(nextGenerationId));
+        GroupMetadataManagerTestContext.SyncResult followerSyncResult = context.sendClassicGroupSync(
+            syncRequest
+                .setMemberId(followerId)
+                .setGenerationId(nextGenerationId)
+        );
 
         assertTrue(followerSyncResult.records.isEmpty());
         assertTrue(followerSyncResult.syncFuture.isDone());
@@ -7938,9 +7195,10 @@ public class GroupMetadataManagerTest {
 
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
@@ -7948,59 +7206,40 @@ public class GroupMetadataManagerTest {
             .withSessionTimeoutMs(5000)
             .build();
 
-        JoinGroupResponseData leaderJoinResponse =
-            context.joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
+        GroupMetadataManagerTestContext.JoinResult followerJoinResult = context.sendClassicGroupJoin(joinRequest);
 
-        String leaderId = leaderJoinResponse.memberId();
-        int generationId = leaderJoinResponse.generationId();
+        assertTrue(followerJoinResult.records.isEmpty());
+        assertFalse(followerJoinResult.joinFuture.isDone());
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(leaderId)
-            .withGenerationId(generationId)
-            .build();
+        GroupMetadataManagerTestContext.JoinResult leaderJoinResult = context.sendClassicGroupJoin(joinRequest.setMemberId(leaderJoinResponse.memberId()));
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
-
-        // Simulate a successful write to log.
-        syncResult.appendFuture.complete(null);
-
-        assertTrue(syncResult.syncFuture.isDone());
-        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
-
-        CompletableFuture<JoinGroupResponseData> followerJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(UNKNOWN_MEMBER_ID),
-            followerJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertFalse(followerJoinFuture.isDone());
-
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(leaderId),
-            leaderJoinFuture
-        );
-
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertTrue(followerJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(Errors.NONE.code(), followerJoinFuture.get().errorCode());
-        assertEquals(leaderJoinFuture.get().generationId(), followerJoinFuture.get().generationId());
-        assertEquals(leaderId, leaderJoinFuture.get().leader());
-        assertEquals(leaderId, followerJoinFuture.get().leader());
+        assertTrue(leaderJoinResult.records.isEmpty());
+        assertTrue(leaderJoinResult.joinFuture.isDone());
+        assertTrue(followerJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderJoinResult.joinFuture.get().errorCode());
+        assertEquals(Errors.NONE.code(), followerJoinResult.joinFuture.get().errorCode());
+        assertEquals(leaderJoinResult.joinFuture.get().generationId(), followerJoinResult.joinFuture.get().generationId());
+        assertEquals(leaderJoinResponse.memberId(), leaderJoinResult.joinFuture.get().leader());
+        assertEquals(leaderJoinResponse.memberId(), followerJoinResult.joinFuture.get().leader());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
 
-        int nextGenerationId = leaderJoinFuture.get().generationId();
-        String followerId = followerJoinFuture.get().memberId();
+        int nextGenerationId = leaderJoinResult.joinFuture.get().generationId();
+        String followerId = followerJoinResult.joinFuture.get().memberId();
         byte[] leaderAssignment = new byte[]{0};
         byte[] followerAssignment = new byte[]{1};
 
         // Sync group with follower to get new assignment.
-        SyncResult followerSyncResult = context.sendGenericGroupSync(syncRequest.setMemberId(followerId)
-            .setGenerationId(nextGenerationId));
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(leaderJoinResponse.memberId())
+            .withGenerationId(leaderJoinResponse.generationId())
+            .build();
+
+        GroupMetadataManagerTestContext.SyncResult followerSyncResult = context.sendClassicGroupSync(
+            syncRequest
+                .setMemberId(followerId)
+                .setGenerationId(nextGenerationId)
+        );
 
         assertTrue(followerSyncResult.records.isEmpty());
         assertFalse(followerSyncResult.syncFuture.isDone());
@@ -8008,7 +7247,7 @@ public class GroupMetadataManagerTest {
         // Sync group with leader to get new assignment.
         List<SyncGroupRequestAssignment> assignment = new ArrayList<>();
         assignment.add(new SyncGroupRequestAssignment()
-            .setMemberId(leaderId)
+            .setMemberId(leaderJoinResponse.memberId())
             .setAssignment(leaderAssignment)
         );
         assignment.add(new SyncGroupRequestAssignment()
@@ -8016,9 +7255,12 @@ public class GroupMetadataManagerTest {
             .setAssignment(followerAssignment)
         );
 
-        syncResult = context.sendGenericGroupSync(syncRequest.setMemberId(leaderId)
-            .setGenerationId(nextGenerationId)
-            .setAssignments(assignment));
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            syncRequest
+                .setMemberId(leaderJoinResponse.memberId())
+                .setGenerationId(nextGenerationId)
+                .setAssignments(assignment)
+        );
 
         // Simulate a successful write to log. This will update the group assignment with the new assignment.
         syncResult.appendFuture.complete(null);
@@ -8029,7 +7271,7 @@ public class GroupMetadataManagerTest {
 
         assertEquals(
             Collections.singletonList(
-                RecordHelpers.newGroupMetadataRecord(group, updatedAssignment, MetadataVersion.latest())),
+                RecordHelpers.newGroupMetadataRecord(group, updatedAssignment, MetadataVersion.latestTesting())),
             syncResult.records
         );
 
@@ -8047,71 +7289,46 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupFromUnchangedLeaderShouldRebalance() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
-
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(UNKNOWN_MEMBER_ID)
-            .withDefaultProtocolTypeAndProtocols()
-            .build();
-
-        JoinGroupResponseData leaderJoinResponse =
-            context.joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
-
-        String leaderId = leaderJoinResponse.memberId();
-        int generationId = leaderJoinResponse.generationId();
-
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
-            .withGroupId("group-id")
-            .withMemberId(leaderId)
-            .withGenerationId(generationId)
-            .build();
-
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
-
-        // Simulate a successful write to log.
-        syncResult.appendFuture.complete(null);
-
-        assertTrue(syncResult.syncFuture.isDone());
-        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
 
         // Join group from the leader should force the group to rebalance, which allows the
         // leader to push new assignment when local metadata changes
-        CompletableFuture<JoinGroupResponseData> leaderJoinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(
-            joinRequest.setMemberId(leaderId),
-            leaderJoinFuture
+        GroupMetadataManagerTestContext.JoinResult leaderRejoinResult = context.sendClassicGroupJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(leaderJoinResponse.memberId())
+                .withDefaultProtocolTypeAndProtocols()
+                .build()
         );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(leaderJoinFuture.isDone());
-        assertEquals(Errors.NONE.code(), leaderJoinFuture.get().errorCode());
-        assertEquals(generationId + 1, leaderJoinFuture.get().generationId());
+        assertTrue(leaderRejoinResult.records.isEmpty());
+        assertTrue(leaderRejoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), leaderRejoinResult.joinFuture.get().errorCode());
+        assertEquals(leaderJoinResponse.generationId() + 1, leaderRejoinResult.joinFuture.get().generationId());
     }
 
     @Test
     public void testJoinGroupCompletionWhenPendingMemberJoins() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
         // Set up a group in with a pending member. The test checks if the pending member joining
         // completes the rebalancing operation
-        JoinGroupResponseData pendingMemberResponse = context.setupGroupWithPendingMember(group);
+        JoinGroupResponseData pendingMemberResponse = context.setupGroupWithPendingMember(group).pendingMemberResponse;
 
         // Compete join group for the pending member
-        JoinGroupRequestData request = new JoinGroupRequestBuilder()
+        JoinGroupRequestData request = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(pendingMemberResponse.memberId())
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
-        CompletableFuture<JoinGroupResponseData> responseFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(request, responseFuture);
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(request);
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(responseFuture.isDone());
-        assertEquals(Errors.NONE.code(), responseFuture.get().errorCode());
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(3, group.allMembers().size());
         assertEquals(0, group.numPendingJoinMembers());
@@ -8121,7 +7338,7 @@ public class GroupMetadataManagerTest {
     public void testJoinGroupCompletionWhenPendingMemberTimesOut() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        GenericGroup group = context.createGenericGroup("group-id");
+        ClassicGroup group = context.createClassicGroup("group-id");
 
         // Set up a group in with a pending member. The test checks if the timeout of the pending member will
         // cause the group to return to a CompletingRebalance state.
@@ -8130,7 +7347,7 @@ public class GroupMetadataManagerTest {
         // Advancing clock by > 2500 (session timeout for the third member)
         // and < 5000 (for first and second members). This will force the coordinator to attempt join
         // completion on heartbeat expiration (since we are in PendingRebalance stage).
-        assertNoOrEmptyResult(context.sleep(3000));
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(3000));
         assertTrue(group.isInState(COMPLETING_REBALANCE));
         assertEquals(2, group.allMembers().size());
         assertEquals(0, group.numPendingJoinMembers());
@@ -8140,188 +7357,2003 @@ public class GroupMetadataManagerTest {
     public void testGenerationIdIncrementsOnRebalance() throws Exception {
         GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
             .build();
-        context.createGenericGroup("group-id");
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
 
-        JoinGroupRequestData joinRequest = new JoinGroupRequestBuilder()
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(leaderJoinResponse.memberId())
+                .withDefaultProtocolTypeAndProtocols()
+                .build()
+        );
+
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(2, joinResult.joinFuture.get().generationId());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
+    }
+
+    @Test
+    public void testStaticMemberHeartbeatLeaderWithInvalidMemberId() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+            "group-id",
+            "leader-instance-id",
+            "follower-instance-id"
+        );
+
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+            new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withGroupInstanceId("leader-instance-id")
+                .withMemberId(rebalanceResult.leaderId)
+                .withGenerationId(rebalanceResult.generationId)
+                .build()
+        );
+
+        assertTrue(syncResult.records.isEmpty());
+        assertTrue(syncResult.syncFuture.isDone());
+        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
+
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId(rebalanceResult.leaderId)
+            .setGenerationId(rebalanceResult.generationId);
+
+        HeartbeatResponseData validHeartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+        assertEquals(Errors.NONE.code(), validHeartbeatResponse.errorCode());
+
+        assertThrows(FencedInstanceIdException.class, () -> context.sendClassicGroupHeartbeat(
+            heartbeatRequest
+                .setGroupInstanceId("leader-instance-id")
+                .setMemberId("invalid-member-id")
+        ));
+    }
+
+    @Test
+    public void testHeartbeatUnknownGroup() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId("member-id")
+            .setGenerationId(-1);
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupHeartbeat(heartbeatRequest));
+    }
+
+    @Test
+    public void testHeartbeatDeadGroup() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        group.transitionTo(DEAD);
+
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId("member-id")
+            .setGenerationId(-1);
+
+        assertThrows(CoordinatorNotAvailableException.class, () -> context.sendClassicGroupHeartbeat(heartbeatRequest));
+    }
+
+    @Test
+    public void testHeartbeatEmptyGroup() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        group.add(new ClassicGroupMember(
+            "member-id",
+            Optional.empty(),
+            "client-id",
+            "client-host",
+            10000,
+            5000,
+            "consumer",
+            GroupMetadataManagerTestContext.toProtocols("range")
+        ));
+
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId("member-id")
+            .setGenerationId(0);
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+        assertEquals(Errors.UNKNOWN_MEMBER_ID.code(), heartbeatResponse.errorCode());
+    }
+
+    @Test
+    public void testHeartbeatUnknownMemberExistingGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId("unknown-member-id")
+                .setGenerationId(leaderJoinResponse.generationId())
+        ));
+    }
+
+    @Test
+    public void testHeartbeatDuringPreparingRebalance() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
             .withMemberId(UNKNOWN_MEMBER_ID)
             .withDefaultProtocolTypeAndProtocols()
             .build();
 
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(joinRequest, true);
+
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), joinResult.joinFuture.get().errorCode());
+
+        String memberId = joinResult.joinFuture.get().memberId();
+
+        context.sendClassicGroupJoin(joinRequest.setMemberId(memberId));
+
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId(memberId)
+                .setGenerationId(0)
+        );
+
+        assertEquals(Errors.REBALANCE_IN_PROGRESS.code(), heartbeatResponse.errorCode());
+    }
+
+    @Test
+    public void testHeartbeatDuringCompletingRebalance() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
         JoinGroupResponseData leaderJoinResponse =
-            context.joinGenericGroupAsDynamicMemberAndCompleteJoin(joinRequest);
+            context.joinClassicGroupAsDynamicMemberAndCompleteJoin(new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .build());
 
-        String leaderId = leaderJoinResponse.memberId();
-        int generationId = leaderJoinResponse.generationId();
+        assertEquals(1, leaderJoinResponse.generationId());
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
 
-        assertEquals(1, generationId);
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId(leaderJoinResponse.memberId())
+                .setGenerationId(leaderJoinResponse.generationId())
+        );
 
-        SyncGroupRequestData syncRequest = new SyncGroupRequestBuilder()
+        assertEquals(new HeartbeatResponseData(), heartbeatResponse);
+    }
+
+    @Test
+    public void testHeartbeatIllegalGeneration() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+
+        assertThrows(IllegalGenerationException.class, () -> context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId(leaderJoinResponse.memberId())
+                .setGenerationId(leaderJoinResponse.generationId() + 1)
+        ));
+    }
+
+    @Test
+    public void testValidHeartbeat() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId(leaderJoinResponse.memberId())
+                .setGenerationId(leaderJoinResponse.generationId())
+        );
+
+        assertEquals(Errors.NONE.code(), heartbeatResponse.errorCode());
+    }
+
+    @Test
+    public void testClassicGroupMemberSessionTimeout() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+
+        // Advance clock by session timeout to kick member out.
+        context.verifySessionExpiration(group, 5000);
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId(leaderJoinResponse.memberId())
+                .setGenerationId(leaderJoinResponse.generationId())
+        ));
+    }
+
+    @Test
+    public void testClassicGroupMemberHeartbeatMaintainsSession() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+
+        // Advance clock by 1/2 of session timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2500));
+
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId(leaderJoinResponse.memberId())
+            .setGenerationId(leaderJoinResponse.generationId());
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+        assertEquals(Errors.NONE.code(), heartbeatResponse.errorCode());
+
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2500));
+
+        heartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+        assertEquals(Errors.NONE.code(), heartbeatResponse.errorCode());
+    }
+
+    @Test
+    public void testClassicGroupMemberSessionTimeoutDuringRebalance() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+
+        // Add a new member. This should trigger a rebalance. The new member has the
+        // 'classicGroupNewMemberJoinTimeoutMs` session timeout, so it has a longer expiration than the existing member.
+        GroupMetadataManagerTestContext.JoinResult otherJoinResult = context.sendClassicGroupJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .withRebalanceTimeoutMs(10000)
+                .withSessionTimeoutMs(5000)
+                .build()
+        );
+
+        assertTrue(otherJoinResult.records.isEmpty());
+        assertFalse(otherJoinResult.joinFuture.isDone());
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+
+        // Advance clock by 1/2 of session timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2500));
+
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId(leaderJoinResponse.memberId())
+            .setGenerationId(leaderJoinResponse.generationId());
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+        assertEquals(Errors.REBALANCE_IN_PROGRESS.code(), heartbeatResponse.errorCode());
+
+        // Advance clock by first member's session timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(5000));
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupHeartbeat(heartbeatRequest));
+
+        // Advance clock by remaining rebalance timeout to complete join phase.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2500));
+
+        assertTrue(otherJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), otherJoinResult.joinFuture.get().errorCode());
+        assertEquals(1, group.size());
+        assertEquals(2, group.generationId());
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+    }
+
+    @Test
+    public void testRebalanceCompletesBeforeMemberJoins() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        // Create a group with a single member
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
             .withGroupId("group-id")
-            .withMemberId(leaderId)
-            .withGenerationId(generationId)
+            .withGroupInstanceId("leader-instance-id")
+            .withMemberId(UNKNOWN_MEMBER_ID)
+            .withDefaultProtocolTypeAndProtocols()
+            .withRebalanceTimeoutMs(10000)
+            .withSessionTimeoutMs(5000)
             .build();
 
-        SyncResult syncResult = context.sendGenericGroupSync(syncRequest);
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAndCompleteJoin(joinRequest, true, true);
 
-        // Simulate a successful write to log.
+        String firstMemberId = leaderJoinResponse.memberId();
+        int firstGenerationId = leaderJoinResponse.generationId();
+
+        assertEquals(1, firstGenerationId);
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+
+        SyncGroupRequestData syncRequest = new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(firstMemberId)
+            .withGenerationId(firstGenerationId)
+            .build();
+
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(syncRequest);
+
+        // Simulate a successful write to the log.
         syncResult.appendFuture.complete(null);
 
         assertTrue(syncResult.syncFuture.isDone());
         assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
+        assertTrue(group.isInState(STABLE));
 
-        CompletableFuture<JoinGroupResponseData> joinFuture = new CompletableFuture<>();
-        CoordinatorResult<Void, Record> result = context.sendGenericGroupJoin(joinRequest.setMemberId(leaderId), joinFuture);
+        // Add a new dynamic member. This should trigger a rebalance. The new member has the
+        // 'classicGroupNewMemberJoinTimeoutMs` session timeout, so it has a longer expiration than the existing member.
+        GroupMetadataManagerTestContext.JoinResult secondMemberJoinResult = context.sendClassicGroupJoin(
+            joinRequest
+                .setMemberId(UNKNOWN_MEMBER_ID)
+                .setGroupInstanceId(null)
+                .setSessionTimeoutMs(2500)
+        );
 
-        assertTrue(result.records().isEmpty());
-        assertTrue(joinFuture.isDone());
-        assertEquals(2, joinFuture.get().generationId());
-        assertEquals(Errors.NONE.code(), joinFuture.get().errorCode());
+        assertTrue(secondMemberJoinResult.records.isEmpty());
+        assertFalse(secondMemberJoinResult.joinFuture.isDone());
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+
+        // Send a couple heartbeats to keep the first member alive while the rebalance finishes.
+        HeartbeatRequestData firstMemberHeartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId(firstMemberId)
+            .setGenerationId(firstGenerationId);
+
+        for (int i = 0; i < 2; i++) {
+            GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2500));
+            HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(firstMemberHeartbeatRequest);
+            assertEquals(Errors.REBALANCE_IN_PROGRESS.code(), heartbeatResponse.errorCode());
+        }
+
+        // Advance clock by remaining rebalance timeout to complete join phase.
+        // The second member will become the leader. However, as the first member is a static member
+        // it will not be kicked out.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(8000));
+
+        assertTrue(secondMemberJoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), secondMemberJoinResult.joinFuture.get().errorCode());
+        assertEquals(2, group.size());
+        assertEquals(2, group.generationId());
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+
+        String otherMemberId = secondMemberJoinResult.joinFuture.get().memberId();
+
+        syncResult = context.sendClassicGroupSync(
+            syncRequest
+                .setGroupInstanceId(null)
+                .setMemberId(otherMemberId)
+                .setGenerationId(2)
+        );
+
+        // Simulate a successful write to the log.
+        syncResult.appendFuture.complete(null);
+
+        assertTrue(syncResult.syncFuture.isDone());
+        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
+        assertTrue(group.isInState(STABLE));
+
+        // The unjoined (first) static member should be remained in the group before session timeout.
+        assertThrows(IllegalGenerationException.class, () -> context.sendClassicGroupHeartbeat(firstMemberHeartbeatRequest));
+
+        // Now session timeout the unjoined (first) member. Still keeping the new member.
+        List<Errors> expectedErrors = Arrays.asList(Errors.NONE, Errors.NONE, Errors.REBALANCE_IN_PROGRESS);
+        for (Errors expectedError : expectedErrors) {
+            GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2000));
+            HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(
+                firstMemberHeartbeatRequest
+                    .setMemberId(otherMemberId)
+                    .setGenerationId(2)
+            );
+
+            assertEquals(expectedError.code(), heartbeatResponse.errorCode());
+        }
+        assertEquals(1, group.size());
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+
+        GroupMetadataManagerTestContext.JoinResult otherMemberRejoinResult = context.sendClassicGroupJoin(
+            joinRequest
+                .setMemberId(otherMemberId)
+                .setGroupInstanceId(null)
+                .setSessionTimeoutMs(2500)
+        );
+
+        assertTrue(otherMemberRejoinResult.records.isEmpty());
+        assertTrue(otherMemberRejoinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), otherMemberRejoinResult.joinFuture.get().errorCode());
+        assertEquals(3, otherMemberRejoinResult.joinFuture.get().generationId());
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+
+        GroupMetadataManagerTestContext.SyncResult otherMemberResyncResult = context.sendClassicGroupSync(
+            syncRequest
+                .setGroupInstanceId(null)
+                .setMemberId(otherMemberId)
+                .setGenerationId(3)
+        );
+
+        // Simulate a successful write to the log.
+        otherMemberResyncResult.appendFuture.complete(null);
+
+        assertTrue(otherMemberResyncResult.syncFuture.isDone());
+        assertEquals(Errors.NONE.code(), otherMemberResyncResult.syncFuture.get().errorCode());
+        assertTrue(group.isInState(STABLE));
+
+        // The joined member should get heart beat response with no error. Let the new member keep
+        // heartbeating for a while to verify that no new rebalance is triggered unexpectedly.
+        for (int i = 0; i < 20; i++) {
+            GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2000));
+            HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(
+                firstMemberHeartbeatRequest
+                    .setMemberId(otherMemberId)
+                    .setGenerationId(3)
+            );
+
+            assertEquals(Errors.NONE.code(), heartbeatResponse.errorCode());
+        }
     }
 
-    private List<JoinGroupResponseMember> toJoinResponseMembers(GenericGroup group) {
-        List<JoinGroupResponseMember> members = new ArrayList<>();
-        String protocolName = group.protocolName().get();
-        group.allMembers().forEach(member -> {
-            members.add(new JoinGroupResponseMember()
-                .setMemberId(member.memberId())
-                .setGroupInstanceId(member.groupInstanceId().orElse(""))
-                .setMetadata(member.metadata(protocolName)));
+    @Test
+    public void testSyncGroupEmptyAssignment() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(
+            new HeartbeatRequestData()
+                .setGroupId("group-id")
+                .setMemberId(leaderJoinResponse.memberId())
+                .setGenerationId(leaderJoinResponse.generationId())
+        );
+
+        assertEquals(Errors.NONE.code(), heartbeatResponse.errorCode());
+    }
+
+    @Test
+    public void testSecondMemberPartiallyJoinAndTimeout() throws Exception {
+        // Test if the following scenario completes a rebalance correctly: A new member starts a JoinGroup request with
+        // an UNKNOWN_MEMBER_ID, attempting to join a stable group. But never initiates the second JoinGroup request with
+        // the provided member ID and times out. The test checks if original member remains the sole member in this group,
+        // which should remain stable throughout this test.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        // Create a group with a single member
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withGroupInstanceId("leader-instance-id")
+            .withMemberId(UNKNOWN_MEMBER_ID)
+            .withDefaultProtocolTypeAndProtocols()
+            .withRebalanceTimeoutMs(10000)
+            .withSessionTimeoutMs(5000)
+            .build();
+
+        JoinGroupResponseData leaderJoinResponse = context.joinClassicGroupAndCompleteJoin(joinRequest, true, true);
+
+        String firstMemberId = leaderJoinResponse.memberId();
+        int firstGenerationId = leaderJoinResponse.generationId();
+
+        assertEquals(1, firstGenerationId);
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(firstMemberId)
+            .withGenerationId(firstGenerationId)
+            .build());
+
+        // Simulate a successful write to the log.
+        syncResult.appendFuture.complete(null);
+
+        assertTrue(syncResult.syncFuture.isDone());
+        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
+        assertTrue(group.isInState(STABLE));
+
+        // Add a new dynamic pending member.
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            joinRequest
+                .setMemberId(UNKNOWN_MEMBER_ID)
+                .setGroupInstanceId(null)
+                .setSessionTimeoutMs(5000),
+            true,
+            true
+        );
+
+        assertTrue(joinResult.records.isEmpty());
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.MEMBER_ID_REQUIRED.code(), joinResult.joinFuture.get().errorCode());
+        assertEquals(1, group.numPendingJoinMembers());
+        assertTrue(group.isInState(STABLE));
+
+        // Heartbeat from the leader to maintain session while timing out pending member.
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId(firstMemberId)
+            .setGenerationId(firstGenerationId);
+
+        for (int i = 0; i < 2; i++) {
+            GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(2500));
+            HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+            assertEquals(Errors.NONE.code(), heartbeatResponse.errorCode());
+        }
+
+        // At this point the second member should have been removed from pending list (session timeout),
+        // and the group should be in Stable state with only the first member in it.
+        assertEquals(1, group.size());
+        assertTrue(group.hasMemberId(firstMemberId));
+        assertEquals(1, group.generationId());
+        assertTrue(group.isInState(STABLE));
+    }
+
+    @Test
+    public void testRebalanceTimesOutWhenSyncRequestIsNotReceived() throws Exception {
+        // This test case ensure that the pending sync expiration does kick out all members
+        // if they don't send sync requests before the rebalance timeout. The
+        // group is in the Empty state in this case.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        int rebalanceTimeoutMs = 5000;
+        int sessionTimeoutMs = 5000;
+        List<JoinGroupResponseData> joinResponses = context.joinWithNMembers("group-id", 3, rebalanceTimeoutMs, sessionTimeoutMs);
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+
+        // Advance clock by 1/2 rebalance timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs / 2));
+
+        // Heartbeats to ensure that heartbeating does not interfere with the
+        // delayed sync operation.
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.NONE));
+
+        // Advance clock by 1/2 rebalance timeout to expire the pending sync. Members should be removed.
+        // The group becomes empty, generating an empty group metadata record.
+        List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(rebalanceTimeoutMs / 2);
+        assertEquals(1, timeouts.size());
+        ExpiredTimeout<Void, Record> timeout = timeouts.get(0);
+        assertEquals(classicGroupSyncKey("group-id"), timeout.key);
+        assertEquals(
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            timeout.result.records()
+        );
+
+        // Simulate a successful write to the log.
+        timeout.result.appendFuture().complete(null);
+
+        // Heartbeats fail because none of the members have sent the sync request
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.UNKNOWN_MEMBER_ID));
+        assertTrue(group.isInState(EMPTY));
+    }
+
+    @Test
+    public void testRebalanceTimesOutWhenSyncRequestIsNotReceivedFromFollowers() throws Exception {
+        // This test case ensure that the pending sync expiration does kick out the followers
+        // if they don't send a sync request before the rebalance timeout. The
+        // group is in the PreparingRebalance state in this case.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        int rebalanceTimeoutMs = 5000;
+        int sessionTimeoutMs = 5000;
+        List<JoinGroupResponseData> joinResponses = context.joinWithNMembers("group-id", 3, rebalanceTimeoutMs, sessionTimeoutMs);
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+
+        // Advance clock by 1/2 rebalance timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs / 2));
+
+        // Heartbeats to ensure that heartbeating does not interfere with the
+        // delayed sync operation.
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.NONE));
+
+        // Leader sends a sync group request.
+        GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withGenerationId(1)
+            .withMemberId(joinResponses.get(0).memberId())
+            .build());
+
+        // Simulate a successful write to the log.
+        syncResult.appendFuture.complete(null);
+
+        assertTrue(syncResult.syncFuture.isDone());
+        assertEquals(Errors.NONE.code(), syncResult.syncFuture.get().errorCode());
+        assertTrue(group.isInState(STABLE));
+
+        // Leader should be able to heartbeat
+        context.verifyHeartbeat(group.groupId(), joinResponses.get(0), Errors.NONE);
+
+        // Advance clock by 1/2 rebalance timeout to expire the pending sync. Followers should be removed.
+        List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(rebalanceTimeoutMs / 2);
+        assertEquals(1, timeouts.size());
+        ExpiredTimeout<Void, Record> timeout = timeouts.get(0);
+        assertEquals(classicGroupSyncKey("group-id"), timeout.key);
+        assertTrue(timeout.result.records().isEmpty());
+
+        // Leader should be able to heartbeat
+        joinResponses.subList(0, 1).forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.REBALANCE_IN_PROGRESS));
+
+        // Heartbeats fail because none of the followers have sent the sync request
+        joinResponses.subList(1, 3).forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.UNKNOWN_MEMBER_ID));
+
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+    }
+
+    @Test
+    public void testRebalanceTimesOutWhenSyncRequestIsNotReceivedFromLeaders() throws Exception {
+        // This test case ensure that the pending sync expiration does kick out the leader
+        // if it does not send a sync request before the rebalance timeout. The
+        // group is in the PreparingRebalance state in this case.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        int rebalanceTimeoutMs = 5000;
+        int sessionTimeoutMs = 5000;
+        List<JoinGroupResponseData> joinResponses = context.joinWithNMembers("group-id", 3, rebalanceTimeoutMs, sessionTimeoutMs);
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+
+        // Advance clock by 1/2 rebalance timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs / 2));
+
+        // Heartbeats to ensure that heartbeating does not interfere with the
+        // delayed sync operation.
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.NONE));
+
+        // Followers send sync group requests.
+        List<CompletableFuture<SyncGroupResponseData>> followerSyncFutures = joinResponses.subList(1, 3).stream()
+            .map(response -> {
+                GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+                    new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                        .withGroupId("group-id")
+                        .withGenerationId(1)
+                        .withMemberId(response.memberId())
+                        .build()
+                );
+
+                assertTrue(syncResult.records.isEmpty());
+                assertFalse(syncResult.syncFuture.isDone());
+                return syncResult.syncFuture;
+            }).collect(Collectors.toList());
+
+        // Advance clock by 1/2 rebalance timeout to expire the pending sync. Leader should be kicked out.
+        List<ExpiredTimeout<Void, Record>> timeouts = context.sleep(rebalanceTimeoutMs / 2);
+        assertEquals(1, timeouts.size());
+        ExpiredTimeout<Void, Record> timeout = timeouts.get(0);
+        assertEquals(classicGroupSyncKey("group-id"), timeout.key);
+        assertTrue(timeout.result.records().isEmpty());
+
+        // Follower sync responses should fail.
+        followerSyncFutures.forEach(future -> {
+            assertTrue(future.isDone());
+            try {
+                assertEquals(Errors.REBALANCE_IN_PROGRESS.code(), future.get().errorCode());
+            } catch (Exception e) {
+                fail("Unexpected exception: " + e.getMessage());
+            }
         });
 
-        return members;
+        // Leader heartbeat should fail.
+        joinResponses.subList(0, 1).forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.UNKNOWN_MEMBER_ID));
+
+        // Follower heartbeats should succeed.
+        joinResponses.subList(1, 3).forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.REBALANCE_IN_PROGRESS));
+
+        assertTrue(group.isInState(PREPARING_REBALANCE));
     }
 
-    private void checkJoinGroupResponse(
+    @Test
+    public void testRebalanceDoesNotTimeOutWhenAllSyncAreReceived() throws Exception {
+        // This test case ensure that the pending sync expiration does not kick any
+        // members out when they have all sent their sync requests. Group should be in Stable state.
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        int rebalanceTimeoutMs = 5000;
+        int sessionTimeoutMs = 5000;
+        List<JoinGroupResponseData> joinResponses = context.joinWithNMembers("group-id", 3, rebalanceTimeoutMs, sessionTimeoutMs);
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+        String leaderId = joinResponses.get(0).memberId();
+
+        // Advance clock by 1/2 rebalance timeout.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs / 2));
+
+        // Heartbeats to ensure that heartbeating does not interfere with the
+        // delayed sync operation.
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.NONE));
+
+        // All members send sync group requests.
+        List<CompletableFuture<SyncGroupResponseData>> syncFutures = joinResponses.stream().map(response -> {
+            GroupMetadataManagerTestContext.SyncResult syncResult = context.sendClassicGroupSync(
+                new GroupMetadataManagerTestContext.SyncGroupRequestBuilder()
+                    .withGroupId("group-id")
+                    .withGenerationId(1)
+                    .withMemberId(response.memberId())
+                    .build()
+            );
+
+            if (response.memberId().equals(leaderId)) {
+                assertEquals(
+                    Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+                    syncResult.records
+                );
+
+                // Simulate a successful write to the log.
+                syncResult.appendFuture.complete(null);
+            } else {
+                assertTrue(syncResult.records.isEmpty());
+            }
+            assertTrue(syncResult.syncFuture.isDone());
+            return syncResult.syncFuture;
+        }).collect(Collectors.toList());
+
+        for (CompletableFuture<SyncGroupResponseData> syncFuture : syncFutures) {
+            assertEquals(Errors.NONE.code(), syncFuture.get().errorCode());
+        }
+
+        // Advance clock by 1/2 rebalance timeout. Pending sync should already have been cancelled.
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs / 2));
+
+        // All member heartbeats should succeed.
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.NONE));
+
+        // Advance clock a bit more
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs / 2));
+
+        // All member heartbeats should succeed.
+        joinResponses.forEach(response -> context.verifyHeartbeat(group.groupId(), response, Errors.NONE));
+
+        assertTrue(group.isInState(STABLE));
+    }
+
+    @Test
+    public void testHeartbeatDuringRebalanceCausesRebalanceInProgress() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        // First start up a group (with a slightly larger timeout to give us time to heartbeat when the rebalance starts)
+        JoinGroupRequestData joinRequest = new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+            .withGroupId("group-id")
+            .withMemberId(UNKNOWN_MEMBER_ID)
+            .withDefaultProtocolTypeAndProtocols()
+            .withRebalanceTimeoutMs(10000)
+            .withSessionTimeoutMs(5000)
+            .build();
+
+        JoinGroupResponseData leaderJoinResponse =
+            context.joinClassicGroupAsDynamicMemberAndCompleteJoin(joinRequest);
+
+        assertEquals(1, leaderJoinResponse.generationId());
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+
+        // Then join with a new consumer to trigger a rebalance
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            joinRequest.setMemberId(UNKNOWN_MEMBER_ID)
+        );
+
+        assertTrue(joinResult.records.isEmpty());
+        assertFalse(joinResult.joinFuture.isDone());
+
+        // We should be in the middle of a rebalance, so the heartbeat should return rebalance in progress.
+        HeartbeatRequestData heartbeatRequest = new HeartbeatRequestData()
+            .setGroupId("group-id")
+            .setMemberId(leaderJoinResponse.memberId())
+            .setGenerationId(leaderJoinResponse.generationId());
+
+        HeartbeatResponseData heartbeatResponse = context.sendClassicGroupHeartbeat(heartbeatRequest);
+        assertEquals(Errors.REBALANCE_IN_PROGRESS.code(), heartbeatResponse.errorCode());
+    }
+
+    @Test
+    public void testListGroups() {
+        String consumerGroupId = "consumer-group-id";
+        String classicGroupId = "classic-group-id";
+        String memberId1 = Uuid.randomUuid().toString();
+        String fooTopicName = "foo";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withConsumerGroup(new ConsumerGroupBuilder(consumerGroupId, 10))
+            .build();
+
+        // Create one classic group record.
+        context.replay(GroupMetadataManagerTestContext.newGroupMetadataRecord(
+            classicGroupId,
+            new GroupMetadataValue()
+                .setMembers(Collections.emptyList())
+                .setGeneration(2)
+                .setLeader(null)
+                .setProtocolType("classic")
+                .setProtocol("range")
+                .setCurrentStateTimestamp(context.time.milliseconds()),
+            MetadataVersion.latestTesting()));
+        context.commit();
+        ClassicGroup classicGroup = context.groupMetadataManager.getOrMaybeCreateClassicGroup(classicGroupId, false);
+        context.replay(RecordHelpers.newMemberSubscriptionRecord(consumerGroupId, new ConsumerGroupMember.Builder(memberId1)
+            .setSubscribedTopicNames(Collections.singletonList(fooTopicName))
+            .build()));
+        context.replay(RecordHelpers.newGroupEpochRecord(consumerGroupId, 11));
+
+        // Test list group response without a group state or group type filter.
+        Map<String, ListGroupsResponseData.ListedGroup> actualAllGroupMap =
+            context.sendListGroups(Collections.emptyList(), Collections.emptyList()).stream()
+                .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        Map<String, ListGroupsResponseData.ListedGroup> expectAllGroupMap =
+            Stream.of(
+                new ListGroupsResponseData.ListedGroup()
+                    .setGroupId(classicGroup.groupId())
+                    .setProtocolType("classic")
+                    .setGroupState(EMPTY.toString())
+                    .setGroupType(Group.GroupType.CLASSIC.toString()),
+                new ListGroupsResponseData.ListedGroup()
+                    .setGroupId(consumerGroupId)
+                    .setProtocolType(ConsumerProtocol.PROTOCOL_TYPE)
+                    .setGroupState(ConsumerGroup.ConsumerGroupState.EMPTY.toString())
+                    .setGroupType(Group.GroupType.CONSUMER.toString())
+            ).collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        // List group with case-insensitive ‘empty’.
+        actualAllGroupMap =
+            context.sendListGroups(Collections.singletonList("empty"), Collections.emptyList())
+                .stream().collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        context.commit();
+
+        // Test list group response to check assigning state in the consumer group.
+        actualAllGroupMap = context.sendListGroups(Collections.singletonList("assigning"), Collections.emptyList()).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap =
+            Stream.of(
+                new ListGroupsResponseData.ListedGroup()
+                    .setGroupId(consumerGroupId)
+                    .setProtocolType(ConsumerProtocol.PROTOCOL_TYPE)
+                    .setGroupState(ConsumerGroup.ConsumerGroupState.ASSIGNING.toString())
+                    .setGroupType(Group.GroupType.CONSUMER.toString())
+            ).collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        // Test list group response with group state filter and no group type filter.
+        actualAllGroupMap = context.sendListGroups(Collections.singletonList("Empty"), Collections.emptyList()).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap = Stream.of(
+            new ListGroupsResponseData.ListedGroup()
+                .setGroupId(classicGroup.groupId())
+                .setProtocolType("classic")
+                .setGroupState(EMPTY.toString())
+                .setGroupType(Group.GroupType.CLASSIC.toString())
+        ).collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        // Test list group response with no group state filter and with group type filter.
+        actualAllGroupMap = context.sendListGroups(Collections.emptyList(), Collections.singletonList(Group.GroupType.CLASSIC.toString())).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap = Stream.of(
+            new ListGroupsResponseData.ListedGroup()
+                .setGroupId(classicGroup.groupId())
+                .setProtocolType("classic")
+                .setGroupState(EMPTY.toString())
+                .setGroupType(Group.GroupType.CLASSIC.toString())
+        ).collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        // Test list group response with no group state filter and with group type filter in a different case.
+        actualAllGroupMap = context.sendListGroups(Collections.emptyList(), Collections.singletonList("Consumer")).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap = Stream.of(
+            new ListGroupsResponseData.ListedGroup()
+                .setGroupId(consumerGroupId)
+                .setProtocolType(ConsumerProtocol.PROTOCOL_TYPE)
+                .setGroupState(ConsumerGroup.ConsumerGroupState.ASSIGNING.toString())
+                .setGroupType(Group.GroupType.CONSUMER.toString())
+        ).collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        actualAllGroupMap = context.sendListGroups(Arrays.asList("empty", "Assigning"), Collections.emptyList()).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap = Stream.of(
+            new ListGroupsResponseData.ListedGroup()
+                .setGroupId(classicGroup.groupId())
+                .setProtocolType(Group.GroupType.CLASSIC.toString())
+                .setGroupState(EMPTY.toString())
+                .setGroupType(Group.GroupType.CLASSIC.toString()),
+            new ListGroupsResponseData.ListedGroup()
+                .setGroupId(consumerGroupId)
+                .setProtocolType(ConsumerProtocol.PROTOCOL_TYPE)
+                .setGroupState(ConsumerGroup.ConsumerGroupState.ASSIGNING.toString())
+                .setGroupType(Group.GroupType.CONSUMER.toString())
+        ).collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        // Test list group response with no group state filter and with invalid group type filter .
+        actualAllGroupMap = context.sendListGroups(Collections.emptyList(), Collections.singletonList("Invalid")).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap = Collections.emptyMap();
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+
+        // Test list group response with invalid group state filter and with no group type filter .
+        actualAllGroupMap = context.sendListGroups(Collections.singletonList("Invalid"), Collections.emptyList()).stream()
+            .collect(Collectors.toMap(ListGroupsResponseData.ListedGroup::groupId, Function.identity()));
+        expectAllGroupMap = Collections.emptyMap();
+
+        assertEquals(expectAllGroupMap, actualAllGroupMap);
+    }
+
+    @Test
+    public void testConsumerGroupDescribeNoErrors() {
+        List<String> consumerGroupIds = Arrays.asList("group-id-1", "group-id-2");
+        int epoch = 10;
+        String memberId = "member-id";
+        String topicName = "topicName";
+        ConsumerGroupMember.Builder memberBuilder = new ConsumerGroupMember.Builder(memberId)
+            .setSubscribedTopicNames(Collections.singletonList(topicName))
+            .setServerAssignorName("assignorName");
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withConsumerGroup(new ConsumerGroupBuilder(consumerGroupIds.get(0), epoch))
+            .withConsumerGroup(new ConsumerGroupBuilder(consumerGroupIds.get(1), epoch)
+                .withMember(memberBuilder.build()))
+            .build();
+
+        List<ConsumerGroupDescribeResponseData.DescribedGroup> expected = Arrays.asList(
+            new ConsumerGroupDescribeResponseData.DescribedGroup()
+                .setGroupEpoch(epoch)
+                .setGroupId(consumerGroupIds.get(0))
+                .setGroupState(ConsumerGroup.ConsumerGroupState.EMPTY.toString())
+                .setAssignorName("range"),
+            new ConsumerGroupDescribeResponseData.DescribedGroup()
+                .setGroupEpoch(epoch)
+                .setGroupId(consumerGroupIds.get(1))
+                .setMembers(Collections.singletonList(
+                    memberBuilder.build().asConsumerGroupDescribeMember(
+                        new Assignment(Collections.emptyMap()),
+                        new MetadataImageBuilder().build().topics()
+                    )
+                ))
+                .setGroupState(ConsumerGroup.ConsumerGroupState.ASSIGNING.toString())
+                .setAssignorName("assignorName")
+        );
+        List<ConsumerGroupDescribeResponseData.DescribedGroup> actual = context.sendConsumerGroupDescribe(consumerGroupIds);
+
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    public void testConsumerGroupDescribeWithErrors() {
+        String groupId = "groupId";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .build();
+
+        List<ConsumerGroupDescribeResponseData.DescribedGroup> actual = context.sendConsumerGroupDescribe(Collections.singletonList(groupId));
+        ConsumerGroupDescribeResponseData.DescribedGroup describedGroup = new ConsumerGroupDescribeResponseData.DescribedGroup()
+            .setGroupId(groupId)
+            .setErrorCode(Errors.GROUP_ID_NOT_FOUND.code());
+        List<ConsumerGroupDescribeResponseData.DescribedGroup> expected = Collections.singletonList(
+            describedGroup
+        );
+
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    public void testConsumerGroupDescribeBeforeAndAfterCommittingOffset() {
+        String consumerGroupId = "consumerGroupId";
+        int epoch = 10;
+        String memberId1 = "memberId1";
+        String memberId2 = "memberId2";
+        String topicName = "topicName";
+        Uuid topicId = Uuid.randomUuid();
+        MetadataImage metadataImage = new MetadataImageBuilder()
+            .addTopic(topicId, topicName, 3)
+            .build();
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(metadataImage)
+            .build();
+
+        ConsumerGroupMember.Builder memberBuilder1 = new ConsumerGroupMember.Builder(memberId1)
+            .setSubscribedTopicNames(Collections.singletonList(topicName));
+        context.replay(RecordHelpers.newMemberSubscriptionRecord(consumerGroupId, memberBuilder1.build()));
+        context.replay(RecordHelpers.newGroupEpochRecord(consumerGroupId, epoch + 1));
+
+        Map<Uuid, Set<Integer>> assignmentMap = new HashMap<>();
+        assignmentMap.put(topicId, Collections.emptySet());
+
+        ConsumerGroupMember.Builder memberBuilder2 = new ConsumerGroupMember.Builder(memberId2);
+        context.replay(RecordHelpers.newMemberSubscriptionRecord(consumerGroupId, memberBuilder2.build()));
+        context.replay(RecordHelpers.newTargetAssignmentRecord(consumerGroupId, memberId2, assignmentMap));
+        context.replay(RecordHelpers.newCurrentAssignmentRecord(consumerGroupId, memberBuilder2.build()));
+        context.replay(RecordHelpers.newGroupEpochRecord(consumerGroupId, epoch + 2));
+
+        List<ConsumerGroupDescribeResponseData.DescribedGroup> actual = context.groupMetadataManager.consumerGroupDescribe(Collections.singletonList(consumerGroupId), context.lastCommittedOffset);
+        ConsumerGroupDescribeResponseData.DescribedGroup describedGroup = new ConsumerGroupDescribeResponseData.DescribedGroup()
+            .setGroupId(consumerGroupId)
+            .setErrorCode(Errors.GROUP_ID_NOT_FOUND.code());
+        List<ConsumerGroupDescribeResponseData.DescribedGroup> expected = Collections.singletonList(
+            describedGroup
+        );
+        assertEquals(expected, actual);
+
+        // Commit the offset and test again
+        context.commit();
+
+        actual = context.groupMetadataManager.consumerGroupDescribe(Collections.singletonList(consumerGroupId), context.lastCommittedOffset);
+        describedGroup = new ConsumerGroupDescribeResponseData.DescribedGroup()
+            .setGroupId(consumerGroupId)
+            .setMembers(Arrays.asList(
+                memberBuilder1.build().asConsumerGroupDescribeMember(new Assignment(Collections.emptyMap()), metadataImage.topics()),
+                memberBuilder2.build().asConsumerGroupDescribeMember(new Assignment(assignmentMap), metadataImage.topics())
+            ))
+            .setGroupState(ConsumerGroup.ConsumerGroupState.ASSIGNING.toString())
+            .setAssignorName("range")
+            .setGroupEpoch(epoch + 2);
+        expected = Collections.singletonList(
+            describedGroup
+        );
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    public void testDescribeGroupStable() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        GroupMetadataValue.MemberMetadata memberMetadata = new GroupMetadataValue.MemberMetadata()
+            .setMemberId("member-id")
+            .setGroupInstanceId("group-instance-id")
+            .setClientHost("client-host")
+            .setClientId("client-id")
+            .setAssignment(new byte[]{0})
+            .setSubscription(new byte[]{0, 1, 2});
+        GroupMetadataValue groupMetadataValue = new GroupMetadataValue()
+            .setMembers(Collections.singletonList(memberMetadata))
+            .setProtocolType("consumer")
+            .setProtocol("range")
+            .setCurrentStateTimestamp(context.time.milliseconds());
+
+        context.replay(GroupMetadataManagerTestContext.newGroupMetadataRecord(
+            "group-id",
+            groupMetadataValue,
+            MetadataVersion.latestTesting()
+        ));
+        context.verifyDescribeGroupsReturnsDeadGroup("group-id");
+        context.commit();
+
+        List<DescribeGroupsResponseData.DescribedGroup> expectedDescribedGroups = Collections.singletonList(
+            new DescribeGroupsResponseData.DescribedGroup()
+                .setGroupId("group-id")
+                .setGroupState(STABLE.toString())
+                .setProtocolType(groupMetadataValue.protocolType())
+                .setProtocolData(groupMetadataValue.protocol())
+                .setMembers(Collections.singletonList(
+                    new DescribeGroupsResponseData.DescribedGroupMember()
+                        .setMemberId(memberMetadata.memberId())
+                        .setGroupInstanceId(memberMetadata.groupInstanceId())
+                        .setClientId(memberMetadata.clientId())
+                        .setClientHost(memberMetadata.clientHost())
+                        .setMemberMetadata(memberMetadata.subscription())
+                        .setMemberAssignment(memberMetadata.assignment())
+                ))
+        );
+
+        List<DescribeGroupsResponseData.DescribedGroup> describedGroups =
+            context.describeGroups(Collections.singletonList("group-id"));
+
+        assertEquals(expectedDescribedGroups, describedGroups);
+    }
+
+    @Test
+    public void testDescribeGroupRebalancing() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        GroupMetadataValue.MemberMetadata memberMetadata = new GroupMetadataValue.MemberMetadata()
+            .setMemberId("member-id")
+            .setGroupInstanceId("group-instance-id")
+            .setClientHost("client-host")
+            .setClientId("client-id")
+            .setAssignment(new byte[]{0})
+            .setSubscription(new byte[]{0, 1, 2});
+        GroupMetadataValue groupMetadataValue = new GroupMetadataValue()
+            .setMembers(Collections.singletonList(memberMetadata))
+            .setProtocolType("consumer")
+            .setProtocol("range")
+            .setCurrentStateTimestamp(context.time.milliseconds());
+
+        context.replay(GroupMetadataManagerTestContext.newGroupMetadataRecord(
+            "group-id",
+            groupMetadataValue,
+            MetadataVersion.latestTesting()
+        ));
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+        context.groupMetadataManager.prepareRebalance(group, "trigger rebalance");
+
+        context.verifyDescribeGroupsReturnsDeadGroup("group-id");
+        context.commit();
+
+        List<DescribeGroupsResponseData.DescribedGroup> expectedDescribedGroups = Collections.singletonList(
+            new DescribeGroupsResponseData.DescribedGroup()
+                .setGroupId("group-id")
+                .setGroupState(PREPARING_REBALANCE.toString())
+                .setProtocolType(groupMetadataValue.protocolType())
+                .setProtocolData("")
+                .setMembers(Collections.singletonList(
+                    new DescribeGroupsResponseData.DescribedGroupMember()
+                        .setMemberId(memberMetadata.memberId())
+                        .setGroupInstanceId(memberMetadata.groupInstanceId())
+                        .setClientId(memberMetadata.clientId())
+                        .setClientHost(memberMetadata.clientHost())
+                        .setMemberAssignment(memberMetadata.assignment())
+                ))
+        );
+
+        List<DescribeGroupsResponseData.DescribedGroup> describedGroups =
+            context.describeGroups(Collections.singletonList("group-id"));
+
+        assertEquals(expectedDescribedGroups, describedGroups);
+    }
+
+    @Test
+    public void testDescribeGroupsGroupIdNotFoundException() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.verifyDescribeGroupsReturnsDeadGroup("group-id");
+    }
+
+    @Test
+    public void testGroupStuckInRebalanceTimeoutDueToNonjoinedStaticMember() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        int longSessionTimeoutMs = 10000;
+        int rebalanceTimeoutMs = 5000;
+        GroupMetadataManagerTestContext.RebalanceResult rebalanceResult = context.staticMembersJoinAndRebalance(
+            "group-id",
+            "leader-instance-id",
+            "follower-instance-id",
+            rebalanceTimeoutMs,
+            longSessionTimeoutMs
+        );
+        ClassicGroup group = context.groupMetadataManager.getOrMaybeCreateClassicGroup("group-id", false);
+
+        // New member joins
+        GroupMetadataManagerTestContext.JoinResult joinResult = context.sendClassicGroupJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withProtocolSuperset()
+                .withSessionTimeoutMs(longSessionTimeoutMs)
+                .build()
+        );
+
+        // The new dynamic member has been elected as leader
+        GroupMetadataManagerTestContext.assertNoOrEmptyResult(context.sleep(rebalanceTimeoutMs));
+        assertTrue(joinResult.joinFuture.isDone());
+        assertEquals(Errors.NONE.code(), joinResult.joinFuture.get().errorCode());
+        assertEquals(joinResult.joinFuture.get().leader(), joinResult.joinFuture.get().memberId());
+        assertEquals(3, joinResult.joinFuture.get().members().size());
+        assertEquals(2, joinResult.joinFuture.get().generationId());
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+
+        assertEquals(
+            mkSet(rebalanceResult.leaderId, rebalanceResult.followerId, joinResult.joinFuture.get().memberId()),
+            group.allMemberIds()
+        );
+        assertEquals(
+            mkSet(rebalanceResult.leaderId, rebalanceResult.followerId),
+            group.allStaticMemberIds()
+        );
+        assertEquals(
+            mkSet(joinResult.joinFuture.get().memberId()),
+            group.allDynamicMemberIds()
+        );
+
+        // Send a special leave group request from static follower, moving group towards PreparingRebalance
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setMemberId(rebalanceResult.followerId)
+                        .setGroupInstanceId("follower-instance-id")
+                ))
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Collections.singletonList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setMemberId(rebalanceResult.followerId)
+                    .setGroupInstanceId("follower-instance-id")));
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+
+        context.sleep(rebalanceTimeoutMs);
+        // Only static leader is maintained, and group is stuck at PreparingRebalance stage
+        assertTrue(group.allDynamicMemberIds().isEmpty());
+        assertEquals(Collections.singleton(rebalanceResult.leaderId), group.allMemberIds());
+        assertTrue(group.allDynamicMemberIds().isEmpty());
+        assertEquals(2, group.generationId());
+        assertTrue(group.isInState(PREPARING_REBALANCE));
+    }
+
+    @Test
+    public void testPendingMembersLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+        JoinGroupResponseData pendingJoinResponse = context.setupGroupWithPendingMember(group).pendingMemberResponse;
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setMemberId(pendingJoinResponse.memberId())
+                ))
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Collections.singletonList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingJoinResponse.memberId())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(leaveResult.records().isEmpty());
+
+        assertTrue(group.isInState(COMPLETING_REBALANCE));
+        assertEquals(2, group.allMembers().size());
+        assertEquals(2, group.allDynamicMemberIds().size());
+        assertEquals(0, group.numPendingJoinMembers());
+    }
+
+    @Test
+    public void testLeaveGroupInvalidGroup() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.createClassicGroup("group-id");
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("invalid-group-id")
+        ));
+    }
+
+    @Test
+    public void testLeaveGroupUnknownGroup() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("unknown-group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setMemberId("member-id")
+                ))
+        ));
+    }
+
+    @Test
+    public void testLeaveGroupUnknownMemberIdExistingGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.createClassicGroup("group-id");
+
+        context.joinClassicGroupAsDynamicMemberAndCompleteJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .build()
+        );
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setMemberId("unknown-member-id")
+                ))
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Collections.singletonList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId("unknown-member-id")
+                    .setErrorCode(Errors.UNKNOWN_MEMBER_ID.code())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(leaveResult.records().isEmpty());
+    }
+
+    @Test
+    public void testLeaveDeadGroup() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+        group.transitionTo(DEAD);
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setMemberId("member-id")
+                ))
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code());
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(leaveResult.records().isEmpty());
+    }
+
+    @Test
+    public void testValidLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        JoinGroupResponseData joinResponse = context.joinClassicGroupAsDynamicMemberAndCompleteJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .build()
+        );
+
+        // Dynamic member leaves. The group becomes empty.
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setMemberId(joinResponse.memberId())
+                ))
+        );
+        assertEquals(
+            Collections.singletonList(RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), MetadataVersion.latestTesting())),
+            leaveResult.records()
+        );
+        // Simulate a successful write to the log.
+        leaveResult.appendFuture().complete(null);
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Collections.singletonList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(joinResponse.memberId())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(group.isInState(EMPTY));
+        assertEquals(2, group.generationId());
+    }
+
+    @Test
+    public void testLeaveGroupWithFencedInstanceId() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.createClassicGroup("group-id");
+
+        context.joinClassicGroupAndCompleteJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withGroupInstanceId("group-instance-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .build(),
+            true,
+            true
+        );
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setGroupInstanceId("group-instance-id")
+                        .setMemberId("other-member-id") // invalid member id
+                ))
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Collections.singletonList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("group-instance-id")
+                    .setMemberId("other-member-id")
+                    .setErrorCode(Errors.FENCED_INSTANCE_ID.code())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(leaveResult.records().isEmpty());
+    }
+
+    @Test
+    public void testLeaveGroupStaticMemberWithUnknownMemberId() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.createClassicGroup("group-id");
+
+        context.joinClassicGroupAndCompleteJoin(
+            new GroupMetadataManagerTestContext.JoinGroupRequestBuilder()
+                .withGroupId("group-id")
+                .withGroupInstanceId("group-instance-id")
+                .withMemberId(UNKNOWN_MEMBER_ID)
+                .withDefaultProtocolTypeAndProtocols()
+                .build(),
+            true,
+            true
+        );
+
+        // Having unknown member id will not affect the request processing due to valid group instance id.
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity()
+                        .setGroupInstanceId("group-instance-id")
+                        .setMemberId(UNKNOWN_MEMBER_ID)
+                ))
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Collections.singletonList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("group-instance-id")));
+
+        assertEquals(expectedResponse, leaveResult.response());
+    }
+
+    @Test
+    public void testStaticMembersValidBatchLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.staticMembersJoinAndRebalance(
+            "group-id",
+            "leader-instance-id",
+            "follower-instance-id"
+        );
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setGroupInstanceId("leader-instance-id"),
+                        new MemberIdentity()
+                            .setGroupInstanceId("follower-instance-id")
+                    )
+                )
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Arrays.asList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("leader-instance-id"),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("follower-instance-id")));
+
+        assertEquals(expectedResponse, leaveResult.response());
+    }
+
+    @Test
+    public void testStaticMembersLeaveUnknownGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.staticMembersJoinAndRebalance(
+            "group-id",
+            "leader-instance-id",
+            "follower-instance-id"
+        );
+
+        assertThrows(UnknownMemberIdException.class, () -> context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("invalid-group-id") // Invalid group id
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setGroupInstanceId("leader-instance-id"),
+                        new MemberIdentity()
+                            .setGroupInstanceId("follower-instance-id")
+                    )
+                )
+        ));
+    }
+
+    @Test
+    public void testStaticMembersFencedInstanceBatchLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.staticMembersJoinAndRebalance(
+            "group-id",
+            "leader-instance-id",
+            "follower-instance-id"
+        );
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setGroupInstanceId("leader-instance-id"),
+                        new MemberIdentity()
+                            .setGroupInstanceId("follower-instance-id")
+                            .setMemberId("invalid-member-id")
+                    )
+                )
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Arrays.asList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("leader-instance-id"),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("follower-instance-id")
+                    .setMemberId("invalid-member-id")
+                    .setErrorCode(Errors.FENCED_INSTANCE_ID.code())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+    }
+
+    @Test
+    public void testStaticMembersUnknownInstanceBatchLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.staticMembersJoinAndRebalance(
+            "group-id",
+            "leader-instance-id",
+            "follower-instance-id"
+        );
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setGroupInstanceId("unknown-instance-id"), // Unknown instance id
+                        new MemberIdentity()
+                            .setGroupInstanceId("follower-instance-id")
+                    )
+                )
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Arrays.asList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("unknown-instance-id")
+                    .setErrorCode(Errors.UNKNOWN_MEMBER_ID.code()),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("follower-instance-id")));
+
+        assertEquals(expectedResponse, leaveResult.response());
+        assertTrue(leaveResult.records().isEmpty());
+    }
+
+    @Test
+    public void testPendingMemberBatchLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+        JoinGroupResponseData pendingJoinResponse = context.setupGroupWithPendingMember(group).pendingMemberResponse;
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setGroupInstanceId("unknown-instance-id"), // Unknown instance id
+                        new MemberIdentity()
+                            .setMemberId(pendingJoinResponse.memberId())
+                    )
+                )
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Arrays.asList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId("unknown-instance-id")
+                    .setErrorCode(Errors.UNKNOWN_MEMBER_ID.code()),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingJoinResponse.memberId())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+    }
+
+    @Test
+    public void testJoinedMemberPendingMemberBatchLeaveGroup() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+        GroupMetadataManagerTestContext.PendingMemberGroupResult pendingMemberGroupResult = context.setupGroupWithPendingMember(group);
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setMemberId(pendingMemberGroupResult.leaderId),
+                        new MemberIdentity()
+                            .setMemberId(pendingMemberGroupResult.followerId),
+                        new MemberIdentity()
+                            .setMemberId(pendingMemberGroupResult.pendingMemberResponse.memberId())
+                    )
+                )
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Arrays.asList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingMemberGroupResult.leaderId),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingMemberGroupResult.followerId),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingMemberGroupResult.pendingMemberResponse.memberId())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+    }
+
+    @Test
+    public void testJoinedMemberPendingMemberBatchLeaveGroupWithUnknownMember() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+        GroupMetadataManagerTestContext.PendingMemberGroupResult pendingMemberGroupResult = context.setupGroupWithPendingMember(group);
+
+        CoordinatorResult<LeaveGroupResponseData, Record> leaveResult = context.sendClassicGroupLeave(
+            new LeaveGroupRequestData()
+                .setGroupId("group-id")
+                .setMembers(
+                    Arrays.asList(
+                        new MemberIdentity()
+                            .setMemberId(pendingMemberGroupResult.leaderId),
+                        new MemberIdentity()
+                            .setMemberId(pendingMemberGroupResult.followerId),
+                        new MemberIdentity()
+                            .setMemberId(pendingMemberGroupResult.pendingMemberResponse.memberId()),
+                        new MemberIdentity()
+                            .setMemberId("unknown-member-id")
+                    )
+                )
+        );
+
+        LeaveGroupResponseData expectedResponse = new LeaveGroupResponseData()
+            .setMembers(Arrays.asList(
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingMemberGroupResult.leaderId),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingMemberGroupResult.followerId),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId(pendingMemberGroupResult.pendingMemberResponse.memberId()),
+                new LeaveGroupResponseData.MemberResponse()
+                    .setGroupInstanceId(null)
+                    .setMemberId("unknown-member-id")
+                    .setErrorCode(Errors.UNKNOWN_MEMBER_ID.code())));
+
+        assertEquals(expectedResponse, leaveResult.response());
+    }
+
+    @Test
+    public void testClassicGroupDelete() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.createClassicGroup("group-id");
+
+        List<Record> expectedRecords = Collections.singletonList(RecordHelpers.newGroupMetadataTombstoneRecord("group-id"));
+        List<Record> records = new ArrayList<>();
+        context.groupMetadataManager.deleteGroup("group-id", records);
+        assertEquals(expectedRecords, records);
+    }
+
+    @Test
+    public void testClassicGroupMaybeDelete() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        ClassicGroup group = context.createClassicGroup("group-id");
+
+        List<Record> expectedRecords = Collections.singletonList(RecordHelpers.newGroupMetadataTombstoneRecord("group-id"));
+        List<Record> records = new ArrayList<>();
+        context.groupMetadataManager.maybeDeleteGroup("group-id", records);
+        assertEquals(expectedRecords, records);
+
+        records = new ArrayList<>();
+        group.transitionTo(PREPARING_REBALANCE);
+        context.groupMetadataManager.maybeDeleteGroup("group-id", records);
+        assertEquals(Collections.emptyList(), records);
+
+        records = new ArrayList<>();
+        context.groupMetadataManager.maybeDeleteGroup("invalid-group-id", records);
+        assertEquals(Collections.emptyList(), records);
+    }
+
+    @Test
+    public void testConsumerGroupDelete() {
+        String groupId = "group-id";
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10))
+            .build();
+
+        List<Record> expectedRecords = Arrays.asList(
+            RecordHelpers.newTargetAssignmentEpochTombstoneRecord(groupId),
+            RecordHelpers.newGroupSubscriptionMetadataTombstoneRecord(groupId),
+            RecordHelpers.newGroupEpochTombstoneRecord(groupId)
+        );
+        List<Record> records = new ArrayList<>();
+        context.groupMetadataManager.deleteGroup(groupId, records);
+        assertEquals(expectedRecords, records);
+    }
+
+    @Test
+    public void testConsumerGroupMaybeDelete() {
+        String groupId = "group-id";
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withConsumerGroup(new ConsumerGroupBuilder(groupId, 10))
+            .build();
+
+        List<Record> expectedRecords = Arrays.asList(
+            RecordHelpers.newTargetAssignmentEpochTombstoneRecord(groupId),
+            RecordHelpers.newGroupSubscriptionMetadataTombstoneRecord(groupId),
+            RecordHelpers.newGroupEpochTombstoneRecord(groupId)
+        );
+        List<Record> records = new ArrayList<>();
+        context.groupMetadataManager.maybeDeleteGroup(groupId, records);
+        assertEquals(expectedRecords, records);
+
+        records = new ArrayList<>();
+        context.replay(RecordHelpers.newMemberSubscriptionRecord(groupId, new ConsumerGroupMember.Builder("member")
+            .setMemberEpoch(10)
+            .setPreviousMemberEpoch(10)
+            .build()));
+        context.groupMetadataManager.maybeDeleteGroup(groupId, records);
+        assertEquals(Collections.emptyList(), records);
+    }
+
+    @Test
+    public void testClassicGroupCompletedRebalanceSensor() throws Exception {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+        context.joinClassicGroupAsDynamicMemberAndCompleteRebalance("group-id");
+        verify(context.metrics).record(CLASSIC_GROUP_COMPLETED_REBALANCES_SENSOR_NAME);
+    }
+
+    @Test
+    public void testConsumerGroupRebalanceSensor() {
+        String groupId = "fooup";
+        // Use a static member id as it makes the test easier.
+        String memberId = Uuid.randomUuid().toString();
+
+        Uuid fooTopicId = Uuid.randomUuid();
+        String fooTopicName = "foo";
+        Uuid barTopicId = Uuid.randomUuid();
+        String barTopicName = "bar";
+
+        MockPartitionAssignor assignor = new MockPartitionAssignor("range");
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .withAssignors(Collections.singletonList(assignor))
+            .withMetadataImage(new MetadataImageBuilder()
+                .addTopic(fooTopicId, fooTopicName, 6)
+                .addTopic(barTopicId, barTopicName, 3)
+                .addRacks()
+                .build())
+            .build();
+
+        assignor.prepareGroupAssignment(new GroupAssignment(
+            Collections.singletonMap(memberId, new MemberAssignment(mkAssignment(
+                mkTopicAssignment(fooTopicId, 0, 1, 2, 3, 4, 5),
+                mkTopicAssignment(barTopicId, 0, 1, 2)
+            )))
+        ));
+
+        context.consumerGroupHeartbeat(
+            new ConsumerGroupHeartbeatRequestData()
+                .setGroupId(groupId)
+                .setMemberId(memberId)
+                .setMemberEpoch(0)
+                .setServerAssignor("range")
+                .setRebalanceTimeoutMs(5000)
+                .setSubscribedTopicNames(Arrays.asList("foo", "bar"))
+                .setTopicPartitions(Collections.emptyList()));
+
+        verify(context.metrics).record(CONSUMER_GROUP_REBALANCES_SENSOR_NAME);
+    }
+
+    @Test
+    public void testOnClassicGroupStateTransition() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        // Creating a classic group should increment metric.
+        ClassicGroup group = context.createClassicGroup("group-id");
+        verify(context.metrics, times(1)).onClassicGroupStateTransition(null, EMPTY);
+
+        // Replaying a new group should not increment metric as the group was already created.
+        context.replay(RecordHelpers.newGroupMetadataRecord(group, Collections.emptyMap(), MetadataVersion.LATEST_PRODUCTION));
+        verify(context.metrics, times(1)).onClassicGroupStateTransition(null, EMPTY);
+
+        // Loading a tombstone should remove group and decrement metric.
+        context.createClassicGroup("group-id");
+        context.replay(RecordHelpers.newGroupMetadataTombstoneRecord("group-id"));
+        verify(context.metrics, times(1)).onClassicGroupStateTransition(EMPTY, null);
+        assertThrows(GroupIdNotFoundException.class, () -> context.groupMetadataManager.group("group-id"));
+
+        // Replaying a tombstone for a group that has already been deleted should not decrement metric.
+        context.replay(RecordHelpers.newGroupMetadataTombstoneRecord("group-id"));
+        verify(context.metrics, times(1)).onClassicGroupStateTransition(EMPTY, null);
+    }
+
+    @Test
+    public void testOnClassicGroupStateTransitionOnLoading() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        ClassicGroup group = new ClassicGroup(
+            new LogContext(),
+            "group-id",
+            EMPTY,
+            context.time,
+            context.metrics
+        );
+
+        // Even if there are more group metadata records loaded than tombstone records, the last replayed record
+        // (tombstone in this test) is the latest state of the group. Hence, the overall metric count should be 0.
+        IntStream.range(0, 5).forEach(__ ->
+            context.replay(RecordHelpers.newGroupMetadataRecord(group, Collections.emptyMap(), MetadataVersion.LATEST_PRODUCTION))
+        );
+        IntStream.range(0, 4).forEach(__ ->
+            context.replay(RecordHelpers.newGroupMetadataTombstoneRecord("group-id"))
+        );
+
+        verify(context.metrics, times(1)).onClassicGroupStateTransition(null, EMPTY);
+        verify(context.metrics, times(1)).onClassicGroupStateTransition(EMPTY, null);
+    }
+
+    @Test
+    public void testOnConsumerGroupStateTransition() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        // Replaying a consumer group epoch record should increment metric.
+        context.replay(RecordHelpers.newGroupEpochRecord("group-id", 1));
+        verify(context.metrics, times(1)).onConsumerGroupStateTransition(null, ConsumerGroup.ConsumerGroupState.EMPTY);
+
+        // Replaying a consumer group epoch record for a group that has already been created should not increment metric.
+        context.replay(RecordHelpers.newGroupEpochRecord("group-id", 1));
+        verify(context.metrics, times(1)).onConsumerGroupStateTransition(null, ConsumerGroup.ConsumerGroupState.EMPTY);
+
+        // Creating and replaying tombstones for a group should remove group and decrement metric.
+        List<Record> tombstones = new ArrayList<>();
+        Group group = context.groupMetadataManager.group("group-id");
+        group.createGroupTombstoneRecords(tombstones);
+        tombstones.forEach(context::replay);
+        assertThrows(GroupIdNotFoundException.class, () -> context.groupMetadataManager.group("group-id"));
+        verify(context.metrics, times(1)).onConsumerGroupStateTransition(ConsumerGroup.ConsumerGroupState.EMPTY, null);
+
+        // Replaying a tombstone for a group that has already been removed should not decrement metric.
+        tombstones.forEach(tombstone -> assertThrows(IllegalStateException.class, () -> context.replay(tombstone)));
+        verify(context.metrics, times(1)).onConsumerGroupStateTransition(ConsumerGroup.ConsumerGroupState.EMPTY, null);
+    }
+
+    @Test
+    public void testOnConsumerGroupStateTransitionOnLoading() {
+        GroupMetadataManagerTestContext context = new GroupMetadataManagerTestContext.Builder()
+            .build();
+
+        // Even if there are more group epoch records loaded than tombstone records, the last replayed record
+        // (tombstone in this test) is the latest state of the group. Hence, the overall metric count should be 0.
+        IntStream.range(0, 5).forEach(__ ->
+            context.replay(RecordHelpers.newGroupEpochRecord("group-id", 0))
+        );
+        context.replay(RecordHelpers.newTargetAssignmentEpochTombstoneRecord("group-id"));
+        context.replay(RecordHelpers.newGroupEpochTombstoneRecord("group-id"));
+        IntStream.range(0, 3).forEach(__ -> {
+            assertThrows(IllegalStateException.class, () -> context.replay(RecordHelpers.newTargetAssignmentEpochTombstoneRecord("group-id")));
+            assertThrows(IllegalStateException.class, () -> context.replay(RecordHelpers.newGroupEpochTombstoneRecord("group-id")));
+        });
+
+        verify(context.metrics, times(1)).onConsumerGroupStateTransition(null, ConsumerGroup.ConsumerGroupState.EMPTY);
+        verify(context.metrics, times(1)).onConsumerGroupStateTransition(ConsumerGroup.ConsumerGroupState.EMPTY, null);
+    }
+
+    private static void checkJoinGroupResponse(
         JoinGroupResponseData expectedResponse,
         JoinGroupResponseData actualResponse,
-        GenericGroup group,
-        GenericGroupState expectedState,
+        ClassicGroup group,
+        ClassicGroupState expectedState,
         Set<String> expectedGroupInstanceIds
     ) {
         assertEquals(expectedResponse, actualResponse);
         assertTrue(group.isInState(expectedState));
 
         Set<String> groupInstanceIds = actualResponse.members()
-            .stream()
-            .map(JoinGroupResponseData.JoinGroupResponseMember::groupInstanceId)
-            .collect(Collectors.toSet());
+                                                     .stream()
+                                                     .map(JoinGroupResponseMember::groupInstanceId)
+                                                     .collect(Collectors.toSet());
 
         assertEquals(expectedGroupInstanceIds, groupInstanceIds);
     }
 
-    private static JoinGroupRequestProtocolCollection toProtocols(String... protocolNames) {
-        JoinGroupRequestProtocolCollection protocols = new JoinGroupRequestProtocolCollection(0);
-        List<String> topicNames = Arrays.asList("foo", "bar", "baz");
-        for (int i = 0; i < protocolNames.length; i++) {
-            protocols.add(new JoinGroupRequestProtocol()
-                .setName(protocolNames[i])
-                .setMetadata(ConsumerProtocol.serializeSubscription(new ConsumerPartitionAssignor.Subscription(
-                    Collections.singletonList(topicNames.get(i % topicNames.size())))).array())
-            );
-        }
-        return protocols;
+    private static List<JoinGroupResponseMember> toJoinResponseMembers(ClassicGroup group) {
+        List<JoinGroupResponseMember> members = new ArrayList<>();
+        String protocolName = group.protocolName().get();
+        group.allMembers().forEach(member -> members.add(
+            new JoinGroupResponseMember()
+                .setMemberId(member.memberId())
+                .setGroupInstanceId(member.groupInstanceId().orElse(""))
+                .setMetadata(member.metadata(protocolName))
+        ));
+
+        return members;
     }
 
-    private static class SyncGroupRequestBuilder {
-        String groupId = null;
-        String groupInstanceId = null;
-        String memberId = null;
-        String protocolType = "consumer";
-        String protocolName = "range";
-        int generationId = 0;
-        List<SyncGroupRequestAssignment> assignment = Collections.emptyList();
-
-        SyncGroupRequestBuilder withGroupId(String groupId) {
-            this.groupId = groupId;
-            return this;
-        }
-
-        SyncGroupRequestBuilder withGroupInstanceId(String groupInstanceId) {
-            this.groupInstanceId = groupInstanceId;
-            return this;
-        }
-
-        SyncGroupRequestBuilder withMemberId(String memberId) {
-            this.memberId = memberId;
-            return this;
-        }
-
-        SyncGroupRequestBuilder withGenerationId(int generationId) {
-            this.generationId = generationId;
-            return this;
-        }
-
-        SyncGroupRequestBuilder withProtocolType(String protocolType) {
-            this.protocolType = protocolType;
-            return this;
-        }
-
-        SyncGroupRequestBuilder withProtocolName(String protocolName) {
-            this.protocolName = protocolName;
-            return this;
-        }
-
-        SyncGroupRequestBuilder withAssignment(List<SyncGroupRequestAssignment> assignment) {
-            this.assignment = assignment;
-            return this;
-        }
-
-
-        SyncGroupRequestData build() {
-            return new SyncGroupRequestData()
-                .setGroupId(groupId)
-                .setGroupInstanceId(groupInstanceId)
-                .setMemberId(memberId)
-                .setGenerationId(generationId)
-                .setProtocolType(protocolType)
-                .setProtocolName(protocolName)
-                .setAssignments(assignment);
-        }
-    }
-
-    private static Record newGroupMetadataRecord(
-        GenericGroup group,
-        MetadataVersion metadataVersion
+    private static List<String> verifyClassicGroupJoinResponses(
+        List<GroupMetadataManagerTestContext.JoinResult> joinResults,
+        int expectedSuccessCount,
+        Errors expectedFailure
     ) {
-        return RecordHelpers.newGroupMetadataRecord(group, group.groupAssignment(), metadataVersion);
-    }
-
-    private static class RebalanceResult {
-        int generationId;
-        String leaderId;
-        byte[] leaderAssignment;
-        String followerId;
-        byte[] followerAssignment;
-
-        RebalanceResult(
-            int generationId,
-            String leaderId,
-            byte[] leaderAssignment,
-            String followerId,
-            byte[] followerAssignment
-        ) {
-            this.generationId = generationId;
-            this.leaderId = leaderId;
-            this.leaderAssignment = leaderAssignment;
-            this.followerId = followerId;
-            this.followerAssignment = followerAssignment;
+        int successCount = 0;
+        List<String> memberIds = new ArrayList<>();
+        for (GroupMetadataManagerTestContext.JoinResult joinResult : joinResults) {
+            if (!joinResult.joinFuture.isDone()) {
+                fail("All responseFutures should be completed.");
+            }
+            try {
+                JoinGroupResponseData joinResponse = joinResult.joinFuture.get();
+                if (joinResponse.errorCode() == Errors.NONE.code()) {
+                    successCount++;
+                } else {
+                    assertEquals(expectedFailure.code(), joinResponse.errorCode());
+                }
+                memberIds.add(joinResponse.memberId());
+            } catch (Exception e) {
+                fail("Unexpected exception: " + e.getMessage());
+            }
         }
-    }
 
-    private static class SyncResult {
-        CompletableFuture<SyncGroupResponseData> syncFuture;
-        List<Record> records;
-        CompletableFuture<Void> appendFuture;
-
-        public SyncResult(
-            CompletableFuture<SyncGroupResponseData> syncFuture,
-            CoordinatorResult<Void, Record> coordinatorResult
-        ) {
-            this.syncFuture = syncFuture;
-            this.records = coordinatorResult.records();
-            this.appendFuture = coordinatorResult.appendFuture();
-        }
+        assertEquals(expectedSuccessCount, successCount);
+        return memberIds;
     }
 }
-

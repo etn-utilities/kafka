@@ -33,8 +33,12 @@ import org.apache.kafka.streams.kstream.JoinWindows;
 import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.StreamJoined;
 import org.apache.kafka.streams.processor.api.Record;
+import org.apache.kafka.streams.state.BuiltInDslStoreSuppliers;
+import org.apache.kafka.streams.state.DslKeyValueParams;
+import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
+import org.apache.kafka.streams.state.internals.WrappedStateStore;
 import org.apache.kafka.streams.test.TestRecord;
 import org.apache.kafka.test.MockApiProcessor;
 import org.apache.kafka.test.MockApiProcessorSupplier;
@@ -50,9 +54,11 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.time.Duration.ZERO;
 import static java.time.Duration.ofMillis;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 
 public class KStreamKStreamOuterJoinTest {
@@ -102,11 +108,11 @@ public class KStreamKStreamOuterJoinTest {
             inputTopic2.pipeInput(1, "b1", 0L);
 
             processor.checkAndClearProcessResult(
-                    new KeyValueTimestamp<>(0, "A0+null", 0L),
-                    new KeyValueTimestamp<>(0, "A0-0+null", 0L),
-                    new KeyValueTimestamp<>(0, "A0+a0", 0L),
-                    new KeyValueTimestamp<>(0, "A0-0+a0", 0L),
-                    new KeyValueTimestamp<>(1, "null+b1", 0L)
+                new KeyValueTimestamp<>(0, "A0+null", 0L),
+                new KeyValueTimestamp<>(0, "A0-0+null", 0L),
+                new KeyValueTimestamp<>(0, "A0+a0", 0L),
+                new KeyValueTimestamp<>(0, "A0-0+a0", 0L),
+                new KeyValueTimestamp<>(1, "null+b1", 0L)
             );
         }
     }
@@ -432,13 +438,13 @@ public class KStreamKStreamOuterJoinTest {
             inputTopic1.pipeInput(1, "A1", 100L);
             processor.checkAndClearProcessResult();
 
-            // push one item to the other window that has a join; this should produce non-joined records with a closed window first, then
-            // the joined records
-            // by the time they were produced before
+            // push one item to the other window that has a join;
+            // this should produce the not-joined record first;
+            // then the joined record
             // w1 = { 0:A0 (ts: 0), 1:A1 (ts: 100) }
             // w2 = { }
-            // --> w1 = { 0:A0 (ts: 0), 1:A1 (ts: 0) }
-            // --> w2 = { 0:a0 (ts: 110) }
+            // --> w1 = { 0:A0 (ts: 0), 1:A1 (ts: 100) }
+            // --> w2 = { 1:a1 (ts: 110) }
             inputTopic2.pipeInput(1, "a1", 110L);
             processor.checkAndClearProcessResult(
                 new KeyValueTimestamp<>(0, "A0+null", 0L),
@@ -782,7 +788,7 @@ public class KStreamKStreamOuterJoinTest {
                 new KeyValueTimestamp<>(1, "A1+null", 1L)
             );
 
-            // push one item to the other stream; this should not produce any items
+            // push one item to the other stream; this should produce one right-join item
             // w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
             // w2 = { 0:a0 (ts: 100), 1:a1 (ts: 102) }
             // --> w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
@@ -835,7 +841,8 @@ public class KStreamKStreamOuterJoinTest {
             final MockApiProcessor<Integer, String, Void, Void> processor = supplier.theCapturedProcessor();
             long time = 0L;
 
-            // push two items to the primary stream; the other window is empty; this should not produce any item
+            // push two items to the primary stream; the other window is empty; 
+            // this should produce one left-joined item
             // w1 = {}
             // w2 = {}
             // --> w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
@@ -843,7 +850,9 @@ public class KStreamKStreamOuterJoinTest {
             for (int i = 0; i < 2; i++) {
                 inputTopic1.pipeInput(expectedKeys[i], "A" + expectedKeys[i], time + i);
             }
-            processor.checkAndClearProcessResult();
+            processor.checkAndClearProcessResult(
+                new KeyValueTimestamp<>(0, "A0+null", 0L)
+            );
 
             // push one item to the other stream; this should produce one full-join item
             // w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
@@ -857,7 +866,8 @@ public class KStreamKStreamOuterJoinTest {
                 new KeyValueTimestamp<>(1, "A1+a1", 1L)
             );
 
-            // push one item to the other stream; this should produce one left-join item
+            // push one item to the other stream;
+            // this should not produce any item
             // w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
             // w2 = { 1:a1 (ts: 1) }
             // --> w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
@@ -865,9 +875,7 @@ public class KStreamKStreamOuterJoinTest {
             time += 100;
             inputTopic2.pipeInput(expectedKeys[2], "a" + expectedKeys[2], time);
 
-            processor.checkAndClearProcessResult(
-                new KeyValueTimestamp<>(0, "A0+null", 0L)
-            );
+            processor.checkAndClearProcessResult();
 
             // push one item to the other stream; this should not produce any item
             // w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
@@ -878,11 +886,12 @@ public class KStreamKStreamOuterJoinTest {
 
             processor.checkAndClearProcessResult();
 
-            // push one item to the first stream; this should produce one full-join item
+            // push one item to the first stream;
+            // this should produce one inner-join item;
             // w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1) }
             // w2 = { 1:a1 (ts: 1), 2:a2 (ts: 101), 3:a3 (ts: 101) }
             // --> w1 = { 0:A0 (ts: 0), 1:A1 (ts: 1), 2:A2 (ts: 201) }
-            // --> w2 = { 1:a1 (ts: 1), 2:a2 (ts: 101), 3:a3 (ts: 101 }
+            // --> w2 = { 1:a1 (ts: 1), 2:a2 (ts: 101), 3:a3 (ts: 101) }
             time += 100;
             inputTopic1.pipeInput(expectedKeys[2], "A" + expectedKeys[2], time);
 
@@ -1307,5 +1316,48 @@ public class KStreamKStreamOuterJoinTest {
         processor.checkAndClearProcessResult(
             new KeyValueTimestamp<>(0, "dummy+null", 1103L)
         );
+    }
+
+    public static class CapturingStoreSuppliers extends BuiltInDslStoreSuppliers.RocksDBDslStoreSuppliers {
+
+        final AtomicReference<KeyValueBytesStoreSupplier> capture = new AtomicReference<>();
+
+        @Override
+        public KeyValueBytesStoreSupplier keyValueStore(final DslKeyValueParams params) {
+            final KeyValueBytesStoreSupplier result = super.keyValueStore(params);
+            capture.set(result);
+            return result;
+        }
+    }
+
+    @Test
+    public void shouldJoinWithNonTimestampedStore() {
+        final CapturingStoreSuppliers suppliers = new CapturingStoreSuppliers();
+        final StreamJoined<Integer, String, String> streamJoined =
+                StreamJoined.with(Serdes.Integer(), Serdes.String(), Serdes.String())
+                        .withDslStoreSuppliers(suppliers);
+
+        final StreamsBuilder builder = new StreamsBuilder();
+
+        final KStream<Integer, String> stream1;
+        final KStream<Integer, String> stream2;
+        final KStream<Integer, String> joined;
+        final MockApiProcessorSupplier<Integer, String, Void, Void> supplier = new MockApiProcessorSupplier<>();
+        stream1 = builder.stream(topic1, consumed);
+        stream2 = builder.stream(topic2, consumed);
+
+        joined = stream1.outerJoin(
+                stream2,
+                MockValueJoiner.TOSTRING_JOINER,
+                JoinWindows.ofTimeDifferenceWithNoGrace(ofMillis(100L)),
+                streamJoined
+        );
+        joined.process(supplier);
+
+        // create a TTD so that the topology gets built
+        try (final TopologyTestDriver ignored = new TopologyTestDriver(builder.build(PROPS), PROPS)) {
+            assertThat("Expected stream joined to supply builders that create non-timestamped stores",
+                    !WrappedStateStore.isTimestamped(suppliers.capture.get().get()));
+        }
     }
 }

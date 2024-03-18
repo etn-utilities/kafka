@@ -28,8 +28,8 @@ import org.apache.kafka.metalog.LocalLogManagerTestEnv;
 import org.apache.kafka.test.TestUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Map;
 import java.util.Optional;
@@ -39,17 +39,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.apache.kafka.controller.QuorumControllerIntegrationTestUtils.createTopics;
 import static org.apache.kafka.controller.QuorumControllerIntegrationTestUtils.forceRenounce;
 import static org.apache.kafka.controller.QuorumControllerIntegrationTestUtils.pause;
 import static org.apache.kafka.controller.QuorumControllerIntegrationTestUtils.registerBrokersAndUnfence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
 @Timeout(value = 40)
 public class QuorumControllerMetricsIntegrationTest {
-    private final static Logger log = LoggerFactory.getLogger(QuorumControllerMetricsIntegrationTest.class);
 
     static class MockControllerMetrics extends QuorumControllerMetrics {
         final AtomicBoolean closed = new AtomicBoolean(false);
@@ -89,21 +90,33 @@ public class QuorumControllerMetricsIntegrationTest {
      * Test that failing over to a new controller increments NewActiveControllersCount on both the
      * active and inactive controllers.
      */
-    @Test
-    public void testFailingOverIncrementsNewActiveControllerCount() throws Throwable {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void testFailingOverIncrementsNewActiveControllerCount(
+        boolean forceFailoverUsingLogLayer
+    ) throws Throwable {
         try (
             LocalLogManagerTestEnv logEnv = new LocalLogManagerTestEnv.Builder(3).
                 build();
             QuorumControllerTestEnv controlEnv = new QuorumControllerTestEnv.Builder(logEnv).
                 build()
         ) {
-            controlEnv.activeController(); // wait for a controller to become active.
+            registerBrokersAndUnfence(controlEnv.activeController(), 1); // wait for a controller to become active.
             TestUtils.retryOnExceptionWithTimeout(30_000, () -> {
                 for (QuorumController controller : controlEnv.controllers()) {
                     assertEquals(1, controller.controllerMetrics().newActiveControllers());
                 }
             });
-            forceRenounce(controlEnv.activeController());
+            if (forceFailoverUsingLogLayer) {
+                controlEnv.activeController().setNewNextWriteOffset(123L);
+
+                TestUtils.retryOnExceptionWithTimeout(30_000, () -> {
+                    createTopics(controlEnv.activeController(), "test_", 1, 1);
+                });
+            } else {
+                // Directly call QuorumController.renounce.
+                forceRenounce(controlEnv.activeController());
+            }
             TestUtils.retryOnExceptionWithTimeout(30_000, () -> {
                 for (QuorumController controller : controlEnv.controllers()) {
                     assertEquals(2, controller.controllerMetrics().newActiveControllers());
@@ -164,7 +177,7 @@ public class QuorumControllerMetricsIntegrationTest {
             for (QuorumController controller : controlEnv.controllers()) {
                 // Inactive controllers don't set these metrics.
                 if (!controller.isActive()) {
-                    assertEquals(false, controller.controllerMetrics().active());
+                    assertFalse(controller.controllerMetrics().active());
                     assertEquals(0L, controller.controllerMetrics().timedOutHeartbeats());
                     assertEquals(0L, controller.controllerMetrics().operationsTimedOut());
                 }

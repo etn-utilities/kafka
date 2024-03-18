@@ -459,7 +459,9 @@ public class TopologyTestDriver implements Closeable {
                 globalTopology,
                 globalProcessorContext,
                 globalStateManager,
-                new LogAndContinueExceptionHandler()
+                new LogAndContinueExceptionHandler(),
+                mockWallClockTime,
+                streamsConfig.getLong(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG)
             );
             globalStateTask.initialize();
             globalProcessorContext.setRecordContext(null);
@@ -522,7 +524,9 @@ public class TopologyTestDriver implements Closeable {
                 stateManager,
                 recordCollector,
                 context,
-                logContext);
+                logContext,
+                false
+                );
             task.initializeIfNeeded();
             task.completeRestoration(noOpResetter -> { });
             task.processorContext().setRecordContext(null);
@@ -596,6 +600,8 @@ public class TopologyTestDriver implements Closeable {
         // If the topology only has global tasks, then `task` would be null.
         // For this method, it just means there's nothing to do.
         if (task != null) {
+            task.resumePollingForPartitionsWithAvailableSpace();
+            task.updateLags();
             while (task.hasRecordsQueued() && task.isProcessable(mockWallClockTime.milliseconds())) {
                 // Process the record ...
                 task.process(mockWallClockTime.milliseconds());

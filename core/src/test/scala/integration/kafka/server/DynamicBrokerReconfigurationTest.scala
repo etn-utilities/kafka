@@ -19,7 +19,7 @@
 package kafka.server
 
 import java.io.{Closeable, File, IOException, Reader, StringReader}
-import java.nio.file.{Files, Paths, StandardCopyOption}
+import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.lang.management.ManagementFactory
 import java.security.KeyStore
 import java.time.Duration
@@ -59,6 +59,8 @@ import org.apache.kafka.common.requests.MetadataRequest
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.security.scram.ScramCredential
 import org.apache.kafka.common.serialization.{StringDeserializer, StringSerializer}
+import org.apache.kafka.security.PasswordEncoder
+import org.apache.kafka.server.config.ConfigType
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 import org.apache.kafka.server.record.BrokerCompressionType
 import org.apache.kafka.server.util.ShutdownableThread
@@ -156,8 +158,8 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
 
     createAdminClient(SecurityProtocol.SSL, SecureInternal)
 
-    TestUtils.createTopicWithAdmin(adminClients.head, topic, servers, numPartitions, replicationFactor = numServers)
-    TestUtils.createTopicWithAdmin(adminClients.head, Topic.GROUP_METADATA_TOPIC_NAME, servers,
+    TestUtils.createTopicWithAdmin(adminClients.head, topic, servers, controllerServers, numPartitions, replicationFactor = numServers)
+    TestUtils.createTopicWithAdmin(adminClients.head, Topic.GROUP_METADATA_TOPIC_NAME, servers, controllerServers,
       numPartitions = servers.head.config.offsetsTopicPartitions,
       replicationFactor = numServers,
       topicConfig = servers.head.groupCoordinator.groupMetadataTopicConfigs)
@@ -252,7 +254,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     expectedProps.setProperty(KafkaConfig.LogRetentionTimeMillisProp, "1680000000")
     expectedProps.setProperty(KafkaConfig.LogRetentionTimeHoursProp, "168")
     expectedProps.setProperty(KafkaConfig.LogRollTimeHoursProp, "168")
-    expectedProps.setProperty(KafkaConfig.LogCleanerThreadsProp, "1")
+    expectedProps.setProperty(CleanerConfig.LOG_CLEANER_THREADS_PROP, "1")
     val logRetentionMs = configEntry(configDesc, KafkaConfig.LogRetentionTimeMillisProp)
     verifyConfig(KafkaConfig.LogRetentionTimeMillisProp, logRetentionMs,
       isSensitive = false, isReadOnly = false, expectedProps)
@@ -262,8 +264,8 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     val logRollHours = configEntry(configDesc, KafkaConfig.LogRollTimeHoursProp)
     verifyConfig(KafkaConfig.LogRollTimeHoursProp, logRollHours,
       isSensitive = false, isReadOnly = true, expectedProps)
-    val logCleanerThreads = configEntry(configDesc, KafkaConfig.LogCleanerThreadsProp)
-    verifyConfig(KafkaConfig.LogCleanerThreadsProp, logCleanerThreads,
+    val logCleanerThreads = configEntry(configDesc, CleanerConfig.LOG_CLEANER_THREADS_PROP)
+    verifyConfig(CleanerConfig.LOG_CLEANER_THREADS_PROP, logCleanerThreads,
       isSensitive = false, isReadOnly = false, expectedProps)
 
     def synonymsList(configEntry: ConfigEntry): List[(String, ConfigSource)] =
@@ -276,7 +278,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
       (KafkaConfig.LogRetentionTimeHoursProp, ConfigSource.DEFAULT_CONFIG)),
       synonymsList(logRetentionHours))
     assertEquals(List((KafkaConfig.LogRollTimeHoursProp, ConfigSource.DEFAULT_CONFIG)), synonymsList(logRollHours))
-    assertEquals(List((KafkaConfig.LogCleanerThreadsProp, ConfigSource.DEFAULT_CONFIG)), synonymsList(logCleanerThreads))
+    assertEquals(List((CleanerConfig.LOG_CLEANER_THREADS_PROP, ConfigSource.DEFAULT_CONFIG)), synonymsList(logCleanerThreads))
   }
 
   @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumName)
@@ -356,7 +358,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
   @ValueSource(strings = Array("zk", "kraft"))
   def testKeyStoreAlter(quorum: String): Unit = {
     val topic2 = "testtopic2"
-    TestUtils.createTopicWithAdmin(adminClients.head, topic2, servers, numPartitions, replicationFactor = numServers)
+    TestUtils.createTopicWithAdmin(adminClients.head, topic2, servers, controllerServers, numPartitions, replicationFactor = numServers)
 
     // Start a producer and consumer that work with the current broker keystore.
     // This should continue working while changes are made
@@ -534,19 +536,19 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     verifyThreads("kafka-log-cleaner-thread-", countPerBroker = 1)
 
     val props = new Properties
-    props.put(KafkaConfig.LogCleanerThreadsProp, "2")
-    props.put(KafkaConfig.LogCleanerDedupeBufferSizeProp, "20000000")
-    props.put(KafkaConfig.LogCleanerDedupeBufferLoadFactorProp, "0.8")
-    props.put(KafkaConfig.LogCleanerIoBufferSizeProp, "300000")
+    props.put(CleanerConfig.LOG_CLEANER_THREADS_PROP, "2")
+    props.put(CleanerConfig.LOG_CLEANER_DEDUPE_BUFFER_SIZE_PROP, "20000000")
+    props.put(CleanerConfig.LOG_CLEANER_DEDUPE_BUFFER_LOAD_FACTOR_PROP, "0.8")
+    props.put(CleanerConfig.LOG_CLEANER_IO_BUFFER_SIZE_PROP, "300000")
     props.put(KafkaConfig.MessageMaxBytesProp, "40000")
-    props.put(KafkaConfig.LogCleanerIoMaxBytesPerSecondProp, "50000000")
-    props.put(KafkaConfig.LogCleanerBackoffMsProp, "6000")
+    props.put(CleanerConfig.LOG_CLEANER_IO_MAX_BYTES_PER_SECOND_PROP, "50000000")
+    props.put(CleanerConfig.LOG_CLEANER_BACKOFF_MS_PROP, "6000")
 
     // Verify cleaner config was updated. Wait for one of the configs to be updated and verify
     // that all other others were updated at the same time since they are reconfigured together
     var newCleanerConfig: CleanerConfig = null
     TestUtils.waitUntilTrue(() => {
-      reconfigureServers(props, perBrokerConfig = false, (KafkaConfig.LogCleanerThreadsProp, "2"))
+      reconfigureServers(props, perBrokerConfig = false, (CleanerConfig.LOG_CLEANER_THREADS_PROP, "2"))
       newCleanerConfig = servers.head.logManager.cleaner.currentConfig
       newCleanerConfig.numThreads == 2
     }, "Log cleaner not reconfigured", 60000)
@@ -564,8 +566,8 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     def cleanerThreads = Thread.getAllStackTraces.keySet.asScala.filter(_.getName.startsWith("kafka-log-cleaner-thread-"))
     cleanerThreads.take(2).foreach(_.interrupt())
     TestUtils.waitUntilTrue(() => cleanerThreads.size == (2 * numServers) - 2, "Threads did not exit")
-    props.put(KafkaConfig.LogCleanerBackoffMsProp, "8000")
-    reconfigureServers(props, perBrokerConfig = false, (KafkaConfig.LogCleanerBackoffMsProp, "8000"))
+    props.put(CleanerConfig.LOG_CLEANER_BACKOFF_MS_PROP, "8000")
+    reconfigureServers(props, perBrokerConfig = false, (CleanerConfig.LOG_CLEANER_BACKOFF_MS_PROP, "8000"))
     verifyThreads("kafka-log-cleaner-thread-", countPerBroker = 2)
 
     // Verify that produce/consume worked throughout this test without any retries in producer
@@ -578,7 +580,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     val topic2 = "testtopic2"
     val topicProps = new Properties
     topicProps.put(KafkaConfig.MinInSyncReplicasProp, "2")
-    TestUtils.createTopicWithAdmin(adminClients.head, topic2, servers, numPartitions = 1, replicationFactor = numServers, topicConfig = topicProps)
+    TestUtils.createTopicWithAdmin(adminClients.head, topic2, servers, controllerServers, numPartitions = 1, replicationFactor = numServers, topicConfig = topicProps)
 
     def getLogOrThrow(tp: TopicPartition): UnifiedLog = {
       var (logOpt, found) = TestUtils.computeUntilTrue {
@@ -618,6 +620,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
 
   @Test
   @Disabled // TODO: To be re-enabled once we can make it less flaky: KAFKA-6527
+  @nowarn("cat=deprecation") // See `TopicConfig.MESSAGE_FORMAT_VERSION_CONFIG` for deprecation details
   def testDefaultTopicConfig(): Unit = {
     val (producerThread, consumerThread) = startProduceConsume(retries = 0)
 
@@ -632,10 +635,10 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     props.put(KafkaConfig.LogRetentionTimeMillisProp, TimeUnit.DAYS.toMillis(1).toString)
     props.put(KafkaConfig.MessageMaxBytesProp, "100000")
     props.put(KafkaConfig.LogIndexIntervalBytesProp, "10000")
-    props.put(KafkaConfig.LogCleanerDeleteRetentionMsProp, TimeUnit.DAYS.toMillis(1).toString)
-    props.put(KafkaConfig.LogCleanerMinCompactionLagMsProp, "60000")
+    props.put(CleanerConfig.LOG_CLEANER_DELETE_RETENTION_MS_PROP, TimeUnit.DAYS.toMillis(1).toString)
+    props.put(CleanerConfig.LOG_CLEANER_MIN_COMPACTION_LAG_MS_PROP, "60000")
     props.put(KafkaConfig.LogDeleteDelayMsProp, "60000")
-    props.put(KafkaConfig.LogCleanerMinCleanRatioProp, "0.3")
+    props.put(CleanerConfig.LOG_CLEANER_MIN_CLEAN_RATIO_PROP, "0.3")
     props.put(KafkaConfig.LogCleanupPolicyProp, "delete")
     props.put(KafkaConfig.UncleanLeaderElectionEnableProp, "false")
     props.put(KafkaConfig.MinInSyncReplicasProp, "2")
@@ -643,6 +646,8 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     props.put(KafkaConfig.LogPreAllocateProp, true.toString)
     props.put(KafkaConfig.LogMessageTimestampTypeProp, TimestampType.LOG_APPEND_TIME.toString)
     props.put(KafkaConfig.LogMessageTimestampDifferenceMaxMsProp, "1000")
+    props.put(KafkaConfig.LogMessageTimestampBeforeMaxMsProp, "1000")
+    props.put(KafkaConfig.LogMessageTimestampAfterMaxMsProp, "1000")
     props.put(KafkaConfig.LogMessageDownConversionEnableProp, "false")
     reconfigureServers(props, perBrokerConfig = false, (KafkaConfig.LogSegmentBytesProp, "4000"))
 
@@ -669,7 +674,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     consumerThread.waitForMatchingRecords(record => record.timestampType == TimestampType.LOG_APPEND_TIME)
 
     // Verify that the new config is actually used for new segments of existing logs
-    TestUtils.waitUntilTrue(() => log.logSegments.exists(_.size > 3000), "Log segment size increase not applied")
+    TestUtils.waitUntilTrue(() => log.logSegments.asScala.exists(_.size > 3000), "Log segment size increase not applied")
 
     // Verify that overridden topic configs are not updated when broker default is updated
     val log2 = servers.head.logManager.getLog(new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, 0))
@@ -681,11 +686,15 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     props.clear()
     props.put(KafkaConfig.LogMessageTimestampTypeProp, TimestampType.CREATE_TIME.toString)
     props.put(KafkaConfig.LogMessageTimestampDifferenceMaxMsProp, "1000")
+    props.put(KafkaConfig.LogMessageTimestampBeforeMaxMsProp, "1000")
+    props.put(KafkaConfig.LogMessageTimestampAfterMaxMsProp, "1000")
     reconfigureServers(props, perBrokerConfig = false, (KafkaConfig.LogMessageTimestampTypeProp, TimestampType.CREATE_TIME.toString))
     consumerThread.waitForMatchingRecords(record => record.timestampType == TimestampType.CREATE_TIME)
     // Verify that invalid configs are not applied
     val invalidProps = Map(
       KafkaConfig.LogMessageTimestampDifferenceMaxMsProp -> "abc", // Invalid type
+      KafkaConfig.LogMessageTimestampBeforeMaxMsProp -> "abc", // Invalid type
+      KafkaConfig.LogMessageTimestampAfterMaxMsProp -> "abc", // Invalid type
       KafkaConfig.LogMessageTimestampTypeProp -> "invalid", // Invalid value
       KafkaConfig.LogRollTimeMillisProp -> "0" // Fails KafkaConfig validation
     )
@@ -930,7 +939,6 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
   }
 
   @Test
-  @Disabled // TODO: To be re-enabled once we can make it less flaky (KAFKA-7957)
   def testMetricsReporterUpdate(): Unit = {
     // Add a new metrics reporter
     val newProps = new Properties
@@ -1103,7 +1111,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     // and update ZK. When each server is started, it should decode using password.encoder.old.secret and update
     // ZK with newly encoded values using password.encoder.secret.
     servers.foreach { server =>
-      val props = adminZkClient.fetchEntityConfig(ConfigType.Broker, server.config.brokerId.toString)
+      val props = adminZkClient.fetchEntityConfig(ConfigType.BROKER, server.config.brokerId.toString)
       val propsEncodedWithOldSecret = props.clone().asInstanceOf[Properties]
       val config = server.config
       val oldSecret = "old-dynamic-config-secret"
@@ -1118,12 +1126,12 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
       }
       val brokerId = server.config.brokerId
       adminZkClient.changeBrokerConfig(Seq(brokerId), propsEncodedWithOldSecret)
-      val updatedProps = adminZkClient.fetchEntityConfig(ConfigType.Broker, brokerId.toString)
+      val updatedProps = adminZkClient.fetchEntityConfig(ConfigType.BROKER, brokerId.toString)
       passwordConfigs.foreach { case (name, value) => assertNotEquals(props.get(value), updatedProps.get(name)) }
 
       server.startup()
       TestUtils.retry(10000) {
-        val newProps = adminZkClient.fetchEntityConfig(ConfigType.Broker, brokerId.toString)
+        val newProps = adminZkClient.fetchEntityConfig(ConfigType.BROKER, brokerId.toString)
         passwordConfigs.foreach { case (name, value) =>
           assertEquals(passwordDecoder.decode(value), passwordDecoder.decode(newProps.getProperty(name))) }
       }
@@ -1248,6 +1256,38 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     }
   }
 
+  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedQuorumName)
+  @ValueSource(strings = Array("zk", "kraft"))
+  def testTransactionVerificationEnable(quorum: String): Unit = {
+    def verifyConfiguration(enabled: Boolean): Unit = {
+      servers.foreach { server =>
+        TestUtils.waitUntilTrue(() => server.logManager.producerStateManagerConfig.transactionVerificationEnabled == enabled, "Configuration was not updated.")
+      }
+      verifyThreads("AddPartitionsToTxnSenderThread-", 1)
+    }
+    // Verification enabled by default
+    verifyConfiguration(true)
+
+    // Dynamically turn verification off.
+    val configPrefix = listenerPrefix(SecureExternal)
+    val updatedProps = securityProps(sslProperties1, KEYSTORE_PROPS, configPrefix)
+    updatedProps.put(KafkaConfig.TransactionPartitionVerificationEnableProp, "false")
+    alterConfigsUsingConfigCommand(updatedProps)
+    verifyConfiguration(false)
+
+    // Ensure it remains off after shutdown.
+    val shutdownServer = servers.head
+    shutdownServer.shutdown()
+    shutdownServer.awaitShutdown()
+    shutdownServer.startup()
+    verifyConfiguration(false)
+
+    // Turn verification back on.
+    updatedProps.put(KafkaConfig.TransactionPartitionVerificationEnableProp, "true")
+    alterConfigsUsingConfigCommand(updatedProps)
+    verifyConfiguration(true)
+  }
+
   private def verifyAddListener(listenerName: String, securityProtocol: SecurityProtocol,
                                 saslMechanisms: Seq[String]): Unit = {
     addListener(servers, listenerName, securityProtocol, saslMechanisms)
@@ -1347,7 +1387,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
   }
 
   private def fetchBrokerConfigsFromZooKeeper(server: KafkaBroker): Properties = {
-    val props = adminZkClient.fetchEntityConfig(ConfigType.Broker, server.config.brokerId.toString)
+    val props = adminZkClient.fetchEntityConfig(ConfigType.BROKER, server.config.brokerId.toString)
     server.config.dynamicConfig.fromPersistentProps(props, perBrokerConfig = true)
   }
 
@@ -1556,7 +1596,7 @@ class DynamicBrokerReconfigurationTest extends QuorumTestHarness with SaslSetup 
     sslStoreProps.put(KafkaConfig.PasswordEncoderSecretProp, kafkaConfig.passwordEncoderSecret.map(_.value).orNull)
     zkClient.makeSurePersistentPathExists(ConfigEntityChangeNotificationZNode.path)
 
-    val entityType = ConfigType.Broker
+    val entityType = ConfigType.BROKER
     val entityName = kafkaConfig.brokerId.toString
 
     val passwordConfigs = sslStoreProps.asScala.keySet.filter(DynamicBrokerConfig.isPasswordConfig)
@@ -1978,7 +2018,7 @@ class TestMetricsReporter extends MetricsReporter with Reconfigurable with Close
 
 class MockFileConfigProvider extends FileConfigProvider {
   @throws(classOf[IOException])
-  override def reader(path: String): Reader = {
+  override def reader(path: Path): Reader = {
     new StringReader("key=testKey\npassword=ServerPassword\ninterval=1000\nupdinterval=2000\nstoretype=JKS")
   }
 }

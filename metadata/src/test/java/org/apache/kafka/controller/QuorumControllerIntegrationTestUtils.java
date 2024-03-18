@@ -18,12 +18,14 @@
 package org.apache.kafka.controller;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult;
@@ -34,6 +36,7 @@ import org.apache.kafka.common.message.BrokerRegistrationRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.metadata.BrokerHeartbeatReply;
 import org.apache.kafka.metadata.BrokerRegistrationReply;
 import org.apache.kafka.server.common.MetadataVersion;
@@ -51,7 +54,7 @@ public class QuorumControllerIntegrationTestUtils {
     private final static Logger log = LoggerFactory.getLogger(QuorumControllerIntegrationTestUtils.class);
 
     BrokerRegistrationRequestData.FeatureCollection brokerFeatures() {
-        return brokerFeatures(MetadataVersion.MINIMUM_KRAFT_VERSION, MetadataVersion.latest());
+        return brokerFeatures(MetadataVersion.MINIMUM_KRAFT_VERSION, MetadataVersion.latestTesting());
     }
 
     /**
@@ -91,8 +94,11 @@ public class QuorumControllerIntegrationTestUtils {
                     .setBrokerId(brokerId)
                     .setRack(null)
                     .setClusterId(controller.clusterId())
-                    .setFeatures(brokerFeatures(MetadataVersion.IBP_3_0_IV1, MetadataVersion.IBP_3_6_IV0))
+                    .setFeatures(brokerFeatures(MetadataVersion.IBP_3_0_IV1, MetadataVersion.latestTesting()))
                     .setIncarnationId(Uuid.fromString("kxAT73dKQsitIedpiPtwB" + brokerId))
+                    .setLogDirs(Collections.singletonList(
+                        Uuid.fromString("TESTBROKER" + Integer.toString(100000 + brokerId).substring(1) + "DIRAAAA")
+                    ))
                     .setListeners(new ListenerCollection(
                         Arrays.asList(
                             new Listener()
@@ -125,7 +131,7 @@ public class QuorumControllerIntegrationTestUtils {
      * @param brokers       The broker IDs to send heartbeats for.
      * @param brokerEpochs  A map from broker ID to broker epoch.
      */
-    static void sendBrokerHeartbeat(
+    static void sendBrokerHeartbeatToUnfenceBrokers(
         QuorumController controller,
         List<Integer> brokers,
         Map<Integer, Long> brokerEpochs
@@ -168,14 +174,16 @@ public class QuorumControllerIntegrationTestUtils {
             request.topics().add(
                 new CreatableTopic().
                     setName(prefix + i).
-                    setNumPartitions(-1).
+                    setNumPartitions(1).
                     setReplicationFactor((short) replicationFactor));
         }
         CreateTopicsResponseData response =
             controller.createTopics(ANONYMOUS_CONTEXT, request, describable).get();
         for (int i = 0; i < numTopics; i++) {
             CreatableTopicResult result = response.topics().find(prefix + i);
-            assertEquals((short) 0, result.errorCode());
+            if (result.errorCode() != Errors.TOPIC_ALREADY_EXISTS.code()) {
+                assertEquals((short) 0, result.errorCode());
+            }
         }
     }
 
@@ -208,6 +216,6 @@ public class QuorumControllerIntegrationTestUtils {
             controller.renounce();
             future.complete(null);
         });
-        future.get();
+        future.get(30, TimeUnit.SECONDS);
     }
 }
