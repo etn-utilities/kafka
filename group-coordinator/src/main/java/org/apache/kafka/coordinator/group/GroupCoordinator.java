@@ -22,6 +22,8 @@ import org.apache.kafka.common.message.ConsumerGroupHeartbeatRequestData;
 import org.apache.kafka.common.message.ConsumerGroupHeartbeatResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData;
+import org.apache.kafka.common.message.DescribeShareGroupOffsetsRequestData;
+import org.apache.kafka.common.message.DescribeShareGroupOffsetsResponseData;
 import org.apache.kafka.common.message.HeartbeatRequestData;
 import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.message.JoinGroupRequestData;
@@ -36,6 +38,9 @@ import org.apache.kafka.common.message.OffsetDeleteRequestData;
 import org.apache.kafka.common.message.OffsetDeleteResponseData;
 import org.apache.kafka.common.message.OffsetFetchRequestData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
+import org.apache.kafka.common.message.ShareGroupDescribeResponseData;
+import org.apache.kafka.common.message.ShareGroupHeartbeatRequestData;
+import org.apache.kafka.common.message.ShareGroupHeartbeatResponseData;
 import org.apache.kafka.common.message.SyncGroupRequestData;
 import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.message.TxnOffsetCommitRequestData;
@@ -48,6 +53,7 @@ import org.apache.kafka.image.MetadataImage;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
@@ -58,6 +64,11 @@ import java.util.function.IntSupplier;
  * Group Coordinator's internal API.
  */
 public interface GroupCoordinator {
+
+    /**
+     * @return True if the new coordinator; False otherwise.
+     */
+    boolean isNewGroupCoordinator();
 
     /**
      * Heartbeat to a Consumer Group.
@@ -71,6 +82,20 @@ public interface GroupCoordinator {
     CompletableFuture<ConsumerGroupHeartbeatResponseData> consumerGroupHeartbeat(
         RequestContext context,
         ConsumerGroupHeartbeatRequestData request
+    );
+
+    /**
+     * Heartbeat to a Share Group.
+     *
+     * @param context           The request context.
+     * @param request           The ShareGroupHeartbeatResponse data.
+     *
+     * @return  A future yielding the response.
+     *          The error code(s) of the response are set to indicate the error(s) occurred during the execution.
+     */
+    CompletableFuture<ShareGroupHeartbeatResponseData> shareGroupHeartbeat(
+        RequestContext context,
+        ShareGroupHeartbeatRequestData request
     );
 
     /**
@@ -175,6 +200,19 @@ public interface GroupCoordinator {
     );
 
     /**
+     * Describe share groups.
+     *
+     * @param context           The coordinator request context.
+     * @param groupIds          The group ids.
+     *
+     * @return A future yielding the results or an exception.
+     */
+    CompletableFuture<List<ShareGroupDescribeResponseData.DescribedGroup>> shareGroupDescribe(
+        RequestContext context,
+        List<String> groupIds
+    );
+
+    /**
      * Delete Groups.
      *
      * @param context           The request context.
@@ -218,6 +256,18 @@ public interface GroupCoordinator {
         RequestContext context,
         OffsetFetchRequestData.OffsetFetchRequestGroup request,
         boolean requireStable
+    );
+
+    /**
+     * Fetch the Share Group Offsets for a given group.
+     *
+     * @param context The request context
+     * @param request The DescribeShareGroupOffsets request.
+     * @return A future yielding the results.
+     */
+    CompletableFuture<DescribeShareGroupOffsetsResponseData> describeShareGroupOffsets(
+        RequestContext context,
+        DescribeShareGroupOffsetsRequestData request
     );
 
     /**
@@ -303,11 +353,18 @@ public interface GroupCoordinator {
     /**
      * Commit or abort the pending transactional offsets for the given partitions.
      *
+     * This method is only used by the old group coordinator. Internally, the old
+     * group coordinator completes the transaction asynchronously in order to
+     * avoid deadlocks. Hence, this method returns a future that the caller
+     * can wait on.
+     *
      * @param producerId        The producer id.
      * @param partitions        The partitions.
      * @param transactionResult The result of the transaction.
+     *
+     * @return A future yielding the result.
      */
-    void onTransactionCompleted(
+    CompletableFuture<Void> onTransactionCompleted(
         long producerId,
         Iterable<TopicPartition> partitions,
         TransactionResult transactionResult
@@ -370,6 +427,22 @@ public interface GroupCoordinator {
      * @return Properties of the internal topic.
      */
     Properties groupMetadataTopicConfigs();
+
+    /**
+     * Return the configuration of the provided group.
+     *
+     * @param groupId       The group id.
+     * @return The group config.
+     */
+    Optional<GroupConfig> groupConfig(String groupId);
+
+    /**
+     * Update the configuration of the provided group.
+     *
+     * @param groupId           The group id.
+     * @param newGroupConfig    The new group config
+     */
+    void updateGroupConfig(String groupId, Properties newGroupConfig);
 
     /**
      * Startup the group coordinator.

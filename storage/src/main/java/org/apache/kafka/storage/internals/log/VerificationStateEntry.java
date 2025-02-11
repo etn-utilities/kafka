@@ -29,16 +29,18 @@ package org.apache.kafka.storage.internals.log;
  */
 public class VerificationStateEntry {
 
-    final private long timestamp;
-    final private VerificationGuard verificationGuard;
+    private final long timestamp;
+    private final VerificationGuard verificationGuard;
     private int lowestSequence;
     private short epoch;
+    private boolean supportsEpochBump;
 
-    public VerificationStateEntry(long timestamp, int sequence, short epoch) {
+    public VerificationStateEntry(long timestamp, int sequence, short epoch, boolean supportsEpochBump) {
         this.timestamp = timestamp;
         this.verificationGuard = new VerificationGuard();
         this.lowestSequence = sequence;
         this.epoch = epoch;
+        this.supportsEpochBump = supportsEpochBump;
     }
 
     public long timestamp() {
@@ -55,6 +57,10 @@ public class VerificationStateEntry {
 
     public short epoch() {
         return epoch;
+    }
+
+    public boolean supportsEpochBump() {
+        return supportsEpochBump;
     }
 
     /**

@@ -25,7 +25,7 @@ import org.apache.kafka.connect.runtime.isolation.PluginUtils;
 import org.apache.kafka.connect.runtime.isolation.ReflectionScanner;
 import org.apache.kafka.connect.runtime.isolation.ServiceLoaderScanner;
 import org.apache.kafka.connect.runtime.isolation.TestPlugins;
-import org.junit.jupiter.api.BeforeAll;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -80,13 +80,6 @@ public class ConnectPluginPathTest {
 
     @TempDir
     public Path workspace;
-
-    @BeforeAll
-    public static void setUp() {
-        // Work around a circular-dependency in TestPlugins.
-        TestPlugins.pluginPath();
-    }
-
 
     @Test
     public void testNoArguments() {
@@ -496,14 +489,12 @@ public class ConnectPluginPathTest {
                     outputJar.getParent().toFile().mkdirs();
                     Files.copy(jarPath, outputJar, StandardCopyOption.REPLACE_EXISTING);
                     outputJar.toUri().toURL().openConnection().setDefaultUseCaches(false);
-                    disableCaching(outputJar);
                     return new PluginLocation(outputJar);
                 }
                 case MULTI_JAR: {
                     Path outputJar = path.resolve(jarPath.getFileName());
                     outputJar.getParent().toFile().mkdirs();
                     Files.copy(jarPath, outputJar, StandardCopyOption.REPLACE_EXISTING);
-                    disableCaching(outputJar);
                     return new PluginLocation(path);
                 }
                 default:
@@ -512,15 +503,6 @@ public class ConnectPluginPathTest {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    private static void disableCaching(Path path) throws IOException {
-        // This function is a workaround for a Java 8 caching bug. When Java 8 support is dropped it may be removed.
-        // This test runs the sync-manifests command, and _without stopping the jvm_ executes a list command.
-        // Under normal use, the sync-manifests command is followed immediately by a JVM shutdown, clearing caches.
-        // The Java 8 ServiceLoader does not disable the URLConnection caching, so doesn't read some previous writes.
-        // Java 9+ ServiceLoaders disable the URLConnection caching, so don't need this patch (it becomes a no-op)
-        path.toUri().toURL().openConnection().setDefaultUseCaches(false);
     }
 
     private static class PluginPathElement {

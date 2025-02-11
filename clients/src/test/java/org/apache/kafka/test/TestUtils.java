@@ -31,7 +31,6 @@ import org.apache.kafka.common.network.NetworkReceive;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.record.RecordVersion;
 import org.apache.kafka.common.record.UnalignedRecords;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.requests.ByteBufferChannel;
@@ -40,6 +39,7 @@ import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,7 +52,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -71,6 +70,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static java.util.Arrays.asList;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -152,6 +152,28 @@ public class TestUtils {
             }
         }
         return new MetadataSnapshot("kafka-cluster", nodesById, partsMetadatas, Collections.emptySet(), Collections.emptySet(), Collections.emptySet(), null, Collections.emptyMap());
+    }
+
+    /**
+     * Asserts that there are no leaked threads with a specified name prefix and daemon status.
+     * This method checks all threads in the JVM, filters them by the provided thread name prefix
+     * and daemon status, and verifies that no matching threads are alive.
+     * If any matching threads are found, the test will fail.
+     *
+     * @param threadName The prefix of the thread names to check. Only threads whose names
+     *                   start with this prefix will be considered.
+     * @param isDaemon   The daemon status to check. Only threads with the specified
+     *                   daemon status (either true for daemon threads or false for non-daemon threads)
+     *                   will be considered.
+     *
+     * @throws AssertionError If any thread with the specified name prefix and daemon status is found and is alive.
+     */
+    public static void assertNoLeakedThreadsWithNameAndDaemonStatus(String threadName, boolean isDaemon) {
+        List<Thread> threads = Thread.getAllStackTraces().keySet().stream()
+                .filter(t -> t.isDaemon() == isDaemon && t.isAlive() && t.getName().startsWith(threadName))
+                .collect(Collectors.toList());
+        int threadCount = threads.size();
+        assertEquals(0, threadCount);
     }
 
     /**
@@ -266,7 +288,6 @@ public class TestUtils {
         } catch (final IOException ex) {
             throw new RuntimeException("Failed to create a temp dir", ex);
         }
-        file.deleteOnExit();
 
         Exit.addShutdownHook("delete-temp-file-shutdown-hook", () -> {
             try {
@@ -277,6 +298,23 @@ public class TestUtils {
         });
 
         return file;
+    }
+
+    /**
+     * Create a random log directory in the format <string>-<int> used for Kafka partition logs.
+     * It is the responsibility of the caller to set up a shutdown hook for deletion of the directory.
+     */
+    public static File randomPartitionLogDir(File parentDir) {
+        int attempts = 1000;
+        while (attempts > 0) {
+            File f = new File(parentDir, "kafka-" + RANDOM.nextInt(1000000));
+            if (f.mkdir()) {
+                f.deleteOnExit();
+                return f;
+            }
+            attempts--;
+        }
+        throw new RuntimeException("Failed to create directory after 1000 attempts");
     }
 
     public static Properties producerConfig(final String bootstrapServers,
@@ -515,10 +553,6 @@ public class TestUtils {
         return list;
     }
 
-    public static <T> Set<T> toSet(Collection<T> collection) {
-        return new HashSet<>(collection);
-    }
-
     public static ByteBuffer toBuffer(Send send) {
         ByteBufferChannel channel = new ByteBufferChannel(send.size());
         try {
@@ -556,8 +590,10 @@ public class TestUtils {
      */
     public static <T extends Throwable> T assertFutureThrows(Future<?> future, Class<T> exceptionCauseClass) {
         ExecutionException exception = assertThrows(ExecutionException.class, future::get);
-        assertTrue(exceptionCauseClass.isInstance(exception.getCause()),
-            "Unexpected exception cause " + exception.getCause());
+        Throwable cause = exception.getCause();
+        assertEquals(exceptionCauseClass, cause.getClass(),
+            "Expected a " + exceptionCauseClass.getSimpleName() + " exception, but got " +
+                        cause.getClass().getSimpleName());
         return exceptionCauseClass.cast(exception.getCause());
     }
 
@@ -568,19 +604,6 @@ public class TestUtils {
     ) {
         T receivedException = assertFutureThrows(future, expectedCauseClassApiException);
         assertEquals(expectedMessage, receivedException.getMessage());
-    }
-
-    public static void assertFutureError(Future<?> future, Class<? extends Throwable> exceptionClass)
-        throws InterruptedException {
-        try {
-            future.get();
-            fail("Expected a " + exceptionClass.getSimpleName() + " exception, but got success.");
-        } catch (ExecutionException ee) {
-            Throwable cause = ee.getCause();
-            assertEquals(exceptionClass, cause.getClass(),
-                "Expected a " + exceptionClass.getSimpleName() + " exception, but got " +
-                    cause.getClass().getSimpleName());
-        }
     }
 
     public static ApiKeys apiKeyFrom(NetworkReceive networkReceive) {
@@ -664,7 +687,7 @@ public class TestUtils {
     ) {
         return createApiVersionsResponse(
                 throttleTimeMs,
-                ApiVersionsResponse.filterApis(RecordVersion.current(), listenerType, true, true),
+                ApiVersionsResponse.filterApis(listenerType, true, true),
                 Features.emptySupportedFeatures(),
                 false
         );
@@ -677,7 +700,7 @@ public class TestUtils {
     ) {
         return createApiVersionsResponse(
                 throttleTimeMs,
-                ApiVersionsResponse.filterApis(RecordVersion.current(), listenerType, enableUnstableLastVersion, true),
+                ApiVersionsResponse.filterApis(listenerType, enableUnstableLastVersion, true),
                 Features.emptySupportedFeatures(),
                 false
         );
@@ -696,12 +719,13 @@ public class TestUtils {
             Features<SupportedVersionRange> latestSupportedFeatures,
             boolean zkMigrationEnabled
     ) {
-        return ApiVersionsResponse.createApiVersionsResponse(
-                throttleTimeMs,
-                apiVersions,
-                latestSupportedFeatures,
-                Collections.emptyMap(),
-                ApiVersionsResponse.UNKNOWN_FINALIZED_FEATURES_EPOCH,
-                zkMigrationEnabled);
+        return new ApiVersionsResponse.Builder().
+            setThrottleTimeMs(throttleTimeMs).
+            setApiVersions(apiVersions).
+            setSupportedFeatures(latestSupportedFeatures).
+            setFinalizedFeatures(Collections.emptyMap()).
+            setFinalizedFeaturesEpoch(ApiVersionsResponse.UNKNOWN_FINALIZED_FEATURES_EPOCH).
+            setZkMigrationEnabled(zkMigrationEnabled).
+            build();
     }
 }

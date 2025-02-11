@@ -17,19 +17,15 @@
 
 package kafka.server
 
-import kafka.test.ClusterInstance
-import kafka.test.annotation.{ClusterTest, ClusterTestDefaults, Type}
-import kafka.test.junit.ClusterTestExtensions
+import org.apache.kafka.common.test.api.ClusterTest
 import kafka.utils.TestUtils
+import org.apache.kafka.common.test.ClusterInstance
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.extension.ExtendWith
 
 import scala.jdk.CollectionConverters._
 
-@ClusterTestDefaults(clusterType = Type.ALL)
-@ExtendWith(value = Array(classOf[ClusterTestExtensions]))
 class BrokerMetricNamesTest(cluster: ClusterInstance) {
   @AfterEach
   def tearDown(): Unit = {

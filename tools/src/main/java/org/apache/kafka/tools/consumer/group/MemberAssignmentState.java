@@ -19,18 +19,34 @@ package org.apache.kafka.tools.consumer.group;
 import org.apache.kafka.common.TopicPartition;
 
 import java.util.List;
+import java.util.Optional;
 
 class MemberAssignmentState {
-    public final String group;
-    public final String consumerId;
-    public final String host;
-    public final String clientId;
-    public final String groupInstanceId;
-    public final int numPartitions;
-    public final List<TopicPartition> assignment;
+    final String group;
+    final String consumerId;
+    final String host;
+    final String clientId;
+    final String groupInstanceId;
+    final int numPartitions;
+    final List<TopicPartition> assignment;
+    final List<TopicPartition> targetAssignment;
+    final Optional<Integer> currentEpoch;
+    final Optional<Integer> targetEpoch;
+    final Optional<Boolean> upgraded;
 
-    public MemberAssignmentState(String group, String consumerId, String host, String clientId, String groupInstanceId,
-                                 int numPartitions, List<TopicPartition> assignment) {
+    MemberAssignmentState(
+        String group,
+        String consumerId,
+        String host,
+        String clientId,
+        String groupInstanceId,
+        int numPartitions,
+        List<TopicPartition> assignment,
+        List<TopicPartition> targetAssignment,
+        Optional<Integer> currentEpoch,
+        Optional<Integer> targetEpoch,
+        Optional<Boolean> upgraded
+    ) {
         this.group = group;
         this.consumerId = consumerId;
         this.host = host;
@@ -38,5 +54,9 @@ class MemberAssignmentState {
         this.groupInstanceId = groupInstanceId;
         this.numPartitions = numPartitions;
         this.assignment = assignment;
+        this.targetAssignment = targetAssignment;
+        this.currentEpoch = currentEpoch;
+        this.targetEpoch = targetEpoch;
+        this.upgraded = upgraded;
     }
 }

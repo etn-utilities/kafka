@@ -41,7 +41,7 @@ public class ToolsUtils {
             for (Metric metric : metrics.values()) {
                 MetricName mName = metric.metricName();
                 String mergedName = mName.group() + ":" + mName.name() + ":" + mName.tags();
-                maxLengthOfDisplayName = maxLengthOfDisplayName < mergedName.length() ? mergedName.length() : maxLengthOfDisplayName;
+                maxLengthOfDisplayName = Math.max(maxLengthOfDisplayName, mergedName.length());
                 sortedMetrics.put(mergedName, metric.metricValue());
             }
             String doubleOutputFormat = "%-" + maxLengthOfDisplayName + "s : %.3f";
@@ -148,11 +148,10 @@ public class ToolsUtils {
      * @param <T> Element type.
      */
     @SuppressWarnings("unchecked")
-    public static <T> Set<T> minus(Set<T> set, T...toRemove) {
+    public static <T> Set<T> minus(Set<T> set, T... toRemove) {
         Set<T> res = new HashSet<>(set);
         for (T t : toRemove)
             res.remove(t);
         return res;
     }
-
 }

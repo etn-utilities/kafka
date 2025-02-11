@@ -19,11 +19,17 @@ package org.apache.kafka.coordinator.group.metrics;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.Utils;
-import org.apache.kafka.coordinator.group.consumer.ConsumerGroup.ConsumerGroupState;
+import org.apache.kafka.coordinator.common.runtime.CoordinatorMetricsShard;
 import org.apache.kafka.coordinator.group.classic.ClassicGroupState;
+import org.apache.kafka.coordinator.group.modern.consumer.ConsumerGroup.ConsumerGroupState;
+import org.apache.kafka.coordinator.group.modern.share.ShareGroup;
 import org.apache.kafka.timeline.SnapshotRegistry;
 import org.apache.kafka.timeline.TimelineLong;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
@@ -37,6 +43,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * report.
  */
 public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
+
+    private static final Logger log = LoggerFactory.getLogger(GroupCoordinatorMetricsShard.class);
 
     /**
      * This class represents a gauge counter for this shard. The TimelineLong object represents a gauge backed by
@@ -58,12 +66,17 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
     /**
      * Classic group size gauge counters keyed by the metric name.
      */
-    private final Map<ClassicGroupState, AtomicLong> classicGroupGauges;
+    private volatile Map<ClassicGroupState, Long> classicGroupGauges;
 
     /**
      * Consumer group size gauge counters keyed by the metric name.
      */
-    private final Map<ConsumerGroupState, TimelineGaugeCounter> consumerGroupGauges;
+    private volatile Map<ConsumerGroupState, Long> consumerGroupGauges;
+
+    /**
+     * Share group size gauge counters keyed by the metric name.
+     */
+    private final Map<ShareGroup.ShareGroupState, TimelineGaugeCounter> shareGroupGauges;
 
     /**
      * All sensors keyed by the sensor name. A Sensor object is shared across all metrics shards.
@@ -94,36 +107,20 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
         numOffsetsTimelineGaugeCounter = new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0));
         numClassicGroupsTimelineCounter = new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0));
 
-        this.classicGroupGauges = Utils.mkMap(
-            Utils.mkEntry(ClassicGroupState.PREPARING_REBALANCE, new AtomicLong(0)),
-            Utils.mkEntry(ClassicGroupState.COMPLETING_REBALANCE, new AtomicLong(0)),
-            Utils.mkEntry(ClassicGroupState.STABLE, new AtomicLong(0)),
-            Utils.mkEntry(ClassicGroupState.DEAD, new AtomicLong(0)),
-            Utils.mkEntry(ClassicGroupState.EMPTY, new AtomicLong(0))
-        );
+        this.classicGroupGauges = Collections.emptyMap();
+        this.consumerGroupGauges = Collections.emptyMap();
 
-        this.consumerGroupGauges = Utils.mkMap(
-            Utils.mkEntry(ConsumerGroupState.EMPTY,
+        this.shareGroupGauges = Utils.mkMap(
+            Utils.mkEntry(ShareGroup.ShareGroupState.EMPTY,
                 new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0))),
-            Utils.mkEntry(ConsumerGroupState.ASSIGNING,
+            Utils.mkEntry(ShareGroup.ShareGroupState.STABLE,
                 new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0))),
-            Utils.mkEntry(ConsumerGroupState.RECONCILING,
-                new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0))),
-            Utils.mkEntry(ConsumerGroupState.STABLE,
-                new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0))),
-            Utils.mkEntry(ConsumerGroupState.DEAD,
+            Utils.mkEntry(ShareGroup.ShareGroupState.DEAD,
                 new TimelineGaugeCounter(new TimelineLong(snapshotRegistry), new AtomicLong(0)))
         );
 
         this.globalSensors = Objects.requireNonNull(globalSensors);
         this.topicPartition = Objects.requireNonNull(topicPartition);
-    }
-
-    public void incrementNumClassicGroups(ClassicGroupState state) {
-        AtomicLong counter = classicGroupGauges.get(state);
-        if (counter != null) {
-            counter.incrementAndGet();
-        }
     }
 
     /**
@@ -136,17 +133,15 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
     }
 
     /**
-     * Increment the number of consumer groups.
+     * Set the number of consumer groups.
+     * This method should be the only way to update the map and is called by the scheduled task
+     * that updates the metrics in {@link org.apache.kafka.coordinator.group.GroupCoordinatorShard}.
+     * Breaking this will result in inconsistent behavior.
      *
-     * @param state the consumer group state.
+     * @param consumerGroupGauges The map counting the number of consumer groups in each state.
      */
-    public void incrementNumConsumerGroups(ConsumerGroupState state) {
-        TimelineGaugeCounter gaugeCounter = consumerGroupGauges.get(state);
-        if (gaugeCounter != null) {
-            synchronized (gaugeCounter.timelineLong) {
-                gaugeCounter.timelineLong.increment();
-            }
-        }
+    public void setConsumerGroupGauges(Map<ConsumerGroupState, Long> consumerGroupGauges) {
+        this.consumerGroupGauges = consumerGroupGauges;
     }
 
     /**
@@ -155,32 +150,6 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
     public void decrementNumOffsets() {
         synchronized (numOffsetsTimelineGaugeCounter.timelineLong) {
             numOffsetsTimelineGaugeCounter.timelineLong.decrement();
-        }
-    }
-
-    /**
-     * Decrement the number of classic groups.
-     *
-     * @param state the classic group state.
-     */
-    public void decrementNumClassicGroups(ClassicGroupState state) {
-        AtomicLong counter = classicGroupGauges.get(state);
-        if (counter != null) {
-            counter.decrementAndGet();
-        }
-    }
-
-    /**
-     * Decrement the number of consumer groups.
-     *
-     * @param state the consumer group state.
-     */
-    public void decrementNumConsumerGroups(ConsumerGroupState state) {
-        TimelineGaugeCounter gaugeCounter = consumerGroupGauges.get(state);
-        if (gaugeCounter != null) {
-            synchronized (gaugeCounter.timelineLong) {
-                gaugeCounter.timelineLong.decrement();
-            }
         }
     }
 
@@ -199,9 +168,9 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
      * @return   The number of classic groups in `state`.
      */
     public long numClassicGroups(ClassicGroupState state) {
-        AtomicLong counter = classicGroupGauges.get(state);
+        Long counter = classicGroupGauges.get(state);
         if (counter != null) {
-            return counter.get();
+            return counter;
         }
         return 0L;
     }
@@ -211,7 +180,7 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
      */
     public long numClassicGroups() {
         return classicGroupGauges.values().stream()
-                                 .mapToLong(AtomicLong::get).sum();
+                                 .mapToLong(Long::longValue).sum();
     }
 
     /**
@@ -222,9 +191,9 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
      * @return   The number of consumer groups in `state`.
      */
     public long numConsumerGroups(ConsumerGroupState state) {
-        TimelineGaugeCounter gaugeCounter = consumerGroupGauges.get(state);
-        if (gaugeCounter != null) {
-            return gaugeCounter.atomicLong.get();
+        Long counter = consumerGroupGauges.get(state);
+        if (counter != null) {
+            return counter;
         }
         return 0L;
     }
@@ -234,7 +203,7 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
      */
     public long numConsumerGroups() {
         return consumerGroupGauges.values().stream()
-            .mapToLong(timelineGaugeCounter -> timelineGaugeCounter.atomicLong.get()).sum();
+            .mapToLong(Long::longValue).sum();
     }
 
     @Override
@@ -260,14 +229,6 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
 
     @Override
     public void commitUpTo(long offset) {
-        this.consumerGroupGauges.forEach((__, gaugeCounter) -> {
-            long value;
-            synchronized (gaugeCounter.timelineLong) {
-                value = gaugeCounter.timelineLong.get(offset);
-            }
-            gaugeCounter.atomicLong.set(value);
-        });
-
         synchronized (numClassicGroupsTimelineCounter.timelineLong) {
             long value = numClassicGroupsTimelineCounter.timelineLong.get(offset);
             numClassicGroupsTimelineCounter.atomicLong.set(value);
@@ -277,104 +238,95 @@ public class GroupCoordinatorMetricsShard implements CoordinatorMetricsShard {
             long value = numOffsetsTimelineGaugeCounter.timelineLong.get(offset);
             numOffsetsTimelineGaugeCounter.atomicLong.set(value);
         }
+
+        this.shareGroupGauges.forEach((__, gaugeCounter) -> {
+            long value;
+            synchronized (gaugeCounter.timelineLong) {
+                value = gaugeCounter.timelineLong.get(offset);
+            }
+            gaugeCounter.atomicLong.set(value);
+        });
     }
 
     /**
-     * Called when a classic group's state has changed. Increment/decrement
-     * the counter accordingly.
+     * Sets the classicGroupGauges.
+     * This method should be the only way to update the map and is called by the scheduled task
+     * that updates the metrics in {@link org.apache.kafka.coordinator.group.GroupCoordinatorShard}.
+     * Breaking this will result in inconsistent behavior.
      *
-     * @param oldState The previous state. null value means that it's a new group.
-     * @param newState The next state. null value means that the group has been removed.
+     * @param classicGroupGauges The map counting the number of classic groups in each state.
      */
-    public void onClassicGroupStateTransition(
-        ClassicGroupState oldState,
-        ClassicGroupState newState
+    public void setClassicGroupGauges(
+        Map<ClassicGroupState, Long> classicGroupGauges
     ) {
-        if (newState != null) {
-            switch (newState) {
-                case PREPARING_REBALANCE:
-                    incrementNumClassicGroups(ClassicGroupState.PREPARING_REBALANCE);
-                    break;
-                case COMPLETING_REBALANCE:
-                    incrementNumClassicGroups(ClassicGroupState.COMPLETING_REBALANCE);
-                    break;
-                case STABLE:
-                    incrementNumClassicGroups(ClassicGroupState.STABLE);
-                    break;
-                case DEAD:
-                    incrementNumClassicGroups(ClassicGroupState.DEAD);
-                    break;
-                case EMPTY:
-                    incrementNumClassicGroups(ClassicGroupState.EMPTY);
-            }
-        }
+        this.classicGroupGauges = classicGroupGauges;
+    }
 
-        if (oldState != null) {
-            switch (oldState) {
-                case PREPARING_REBALANCE:
-                    decrementNumClassicGroups(ClassicGroupState.PREPARING_REBALANCE);
-                    break;
-                case COMPLETING_REBALANCE:
-                    decrementNumClassicGroups(ClassicGroupState.COMPLETING_REBALANCE);
-                    break;
-                case STABLE:
-                    decrementNumClassicGroups(ClassicGroupState.STABLE);
-                    break;
-                case DEAD:
-                    decrementNumClassicGroups(ClassicGroupState.DEAD);
-                    break;
-                case EMPTY:
-                    decrementNumClassicGroups(ClassicGroupState.EMPTY);
+    public void incrementNumShareGroups(ShareGroup.ShareGroupState state) {
+        TimelineGaugeCounter gaugeCounter = shareGroupGauges.get(state);
+        if (gaugeCounter != null) {
+            synchronized (gaugeCounter.timelineLong) {
+                gaugeCounter.timelineLong.increment();
             }
         }
     }
 
-    /**
-     * Called when a consumer group's state has changed. Increment/decrement
-     * the counter accordingly.
-     *
-     * @param oldState The previous state. null value means that it's a new group.
-     * @param newState The next state. null value means that the group has been removed.
-     */
-    public void onConsumerGroupStateTransition(
-        ConsumerGroupState oldState,
-        ConsumerGroupState newState
+    public void decrementNumShareGroups(ShareGroup.ShareGroupState state) {
+        TimelineGaugeCounter gaugeCounter = shareGroupGauges.get(state);
+        if (gaugeCounter != null) {
+            synchronized (gaugeCounter.timelineLong) {
+                gaugeCounter.timelineLong.decrement();
+            }
+        }
+    }
+
+    public long numShareGroups(ShareGroup.ShareGroupState state) {
+        TimelineGaugeCounter gaugeCounter = shareGroupGauges.get(state);
+        if (gaugeCounter != null) {
+            return gaugeCounter.atomicLong.get();
+        }
+        return 0L;
+    }
+
+    public long numShareGroups() {
+        return shareGroupGauges.values().stream()
+            .mapToLong(timelineGaugeCounter -> timelineGaugeCounter.atomicLong.get()).sum();
+    }
+
+    // could be called from ShareGroup to indicate state transition
+    public void onShareGroupStateTransition(
+            ShareGroup.ShareGroupState oldState,
+            ShareGroup.ShareGroupState newState
     ) {
         if (newState != null) {
             switch (newState) {
                 case EMPTY:
-                    incrementNumConsumerGroups(ConsumerGroupState.EMPTY);
-                    break;
-                case ASSIGNING:
-                    incrementNumConsumerGroups(ConsumerGroupState.ASSIGNING);
-                    break;
-                case RECONCILING:
-                    incrementNumConsumerGroups(ConsumerGroupState.RECONCILING);
+                    incrementNumShareGroups(ShareGroup.ShareGroupState.EMPTY);
                     break;
                 case STABLE:
-                    incrementNumConsumerGroups(ConsumerGroupState.STABLE);
+                    incrementNumShareGroups(ShareGroup.ShareGroupState.STABLE);
                     break;
                 case DEAD:
-                    incrementNumConsumerGroups(ConsumerGroupState.DEAD);
+                    incrementNumShareGroups(ShareGroup.ShareGroupState.DEAD);
+                    break;
+                default:
+                    log.warn("Unknown new share group state: {}", newState);
             }
         }
 
         if (oldState != null) {
             switch (oldState) {
                 case EMPTY:
-                    decrementNumConsumerGroups(ConsumerGroupState.EMPTY);
-                    break;
-                case ASSIGNING:
-                    decrementNumConsumerGroups(ConsumerGroupState.ASSIGNING);
-                    break;
-                case RECONCILING:
-                    decrementNumConsumerGroups(ConsumerGroupState.RECONCILING);
+                    decrementNumShareGroups(ShareGroup.ShareGroupState.EMPTY);
                     break;
                 case STABLE:
-                    decrementNumConsumerGroups(ConsumerGroupState.STABLE);
+                    decrementNumShareGroups(ShareGroup.ShareGroupState.STABLE);
                     break;
                 case DEAD:
-                    decrementNumConsumerGroups(ConsumerGroupState.DEAD);
+                    decrementNumShareGroups(ShareGroup.ShareGroupState.DEAD);
+                    break;
+                default:
+                    log.warn("Unknown previous share group state: {}", oldState);
             }
         }
     }

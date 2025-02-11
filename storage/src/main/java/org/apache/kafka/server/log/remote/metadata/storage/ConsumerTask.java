@@ -27,6 +27,7 @@ import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.server.log.remote.metadata.storage.serialization.RemoteLogMetadataSerde;
 import org.apache.kafka.server.log.remote.storage.RemoteLogMetadata;
 import org.apache.kafka.server.log.remote.storage.RemoteLogSegmentMetadata;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,33 +123,43 @@ class ConsumerTask implements Runnable, Closeable {
     public void run() {
         log.info("Starting consumer task thread.");
         while (!isClosed) {
-            try {
-                if (hasAssignmentChanged) {
-                    maybeWaitForPartitionAssignments();
-                }
-
-                log.trace("Polling consumer to receive remote log metadata topic records");
-                final ConsumerRecords<byte[], byte[]> consumerRecords = consumer.poll(Duration.ofMillis(pollTimeoutMs));
-                for (ConsumerRecord<byte[], byte[]> record : consumerRecords) {
-                    processConsumerRecord(record);
-                }
-                maybeMarkUserPartitionsAsReady();
-            } catch (final WakeupException ex) {
-                // ignore logging the error
-                isClosed = true;
-            } catch (final RetriableException ex) {
-                log.warn("Retriable error occurred while processing the records. Retrying...", ex);
-            } catch (final Exception ex) {
-                isClosed = true;
-                log.error("Error occurred while processing the records", ex);
-            }
+            ingestRecords();
         }
+        closeConsumer();
+        log.info("Exited from consumer task thread");
+    }
+
+    // visible for testing
+    void ingestRecords() {
+        try {
+            if (hasAssignmentChanged) {
+                maybeWaitForPartitionAssignments();
+            }
+
+            log.trace("Polling consumer to receive remote log metadata topic records");
+            final ConsumerRecords<byte[], byte[]> consumerRecords = consumer.poll(Duration.ofMillis(pollTimeoutMs));
+            for (ConsumerRecord<byte[], byte[]> record : consumerRecords) {
+                processConsumerRecord(record);
+            }
+            maybeMarkUserPartitionsAsReady();
+        } catch (final WakeupException ex) {
+            // ignore logging the error
+            isClosed = true;
+        } catch (final RetriableException ex) {
+            log.warn("Retriable error occurred while processing the records. Retrying...", ex);
+        } catch (final Exception ex) {
+            isClosed = true;
+            log.error("Error occurred while processing the records", ex);
+        }
+    }
+
+    // visible for testing
+    void closeConsumer() {
         try {
             consumer.close(Duration.ofSeconds(30));
         } catch (final Exception e) {
             log.error("Error encountered while closing the consumer", e);
         }
-        log.info("Exited from consumer task thread");
     }
 
     private void processConsumerRecord(ConsumerRecord<byte[], byte[]> record) {
@@ -238,10 +249,15 @@ class ConsumerTask implements Runnable, Closeable {
             this.assignedMetadataPartitions = Collections.unmodifiableSet(metadataPartitionSnapshot);
             // for newly assigned user-partitions, read from the beginning of the corresponding metadata partition
             final Set<TopicPartition> seekToBeginOffsetPartitions = assignedUserTopicIdPartitionsSnapshot
-                .stream()
-                .filter(utp -> !utp.isAssigned)
-                .map(utp -> toRemoteLogPartition(utp.metadataPartition))
-                .collect(Collectors.toSet());
+                    .stream()
+                    .filter(utp -> !utp.isAssigned)
+                    .map(utp -> utp.metadataPartition)
+                    // When reset to beginning is happening, we also need to reset the last read offset
+                    // Otherwise if the next reassignment request for the same metadata partition comes in
+                    // before the record of already assigned topic has been read, then the reset will happen again to the last read offset
+                    .peek(readOffsetsByMetadataPartition::remove)
+                    .map(ConsumerTask::toRemoteLogPartition)
+                    .collect(Collectors.toSet());
             consumer.seekToBeginning(seekToBeginOffsetPartitions);
             // for other metadata partitions, read from the offset where the processing left last time.
             remoteLogPartitions.stream()
@@ -282,11 +298,11 @@ class ConsumerTask implements Runnable, Closeable {
         log.info("Unassigned user-topic-partitions: {}", unassignedPartitions.size());
     }
 
-    public void addAssignmentsForPartitions(final Set<TopicIdPartition> partitions) {
+    void addAssignmentsForPartitions(final Set<TopicIdPartition> partitions) {
         updateAssignments(Objects.requireNonNull(partitions), Collections.emptySet());
     }
 
-    public void removeAssignmentsForPartitions(final Set<TopicIdPartition> partitions) {
+    void removeAssignmentsForPartitions(final Set<TopicIdPartition> partitions) {
         updateAssignments(Collections.emptySet(), Objects.requireNonNull(partitions));
     }
 
@@ -309,15 +325,15 @@ class ConsumerTask implements Runnable, Closeable {
         }
     }
 
-    public Optional<Long> readOffsetForMetadataPartition(final int partition) {
+    Optional<Long> readOffsetForMetadataPartition(final int partition) {
         return Optional.ofNullable(readOffsetsByMetadataPartition.get(partition));
     }
 
-    public boolean isMetadataPartitionAssigned(final int partition) {
+    boolean isMetadataPartitionAssigned(final int partition) {
         return assignedMetadataPartitions.contains(partition);
     }
 
-    public boolean isUserPartitionAssigned(final TopicIdPartition partition) {
+    boolean isUserPartitionAssigned(final TopicIdPartition partition) {
         final UserTopicIdPartition utp = assignedUserTopicIdPartitions.get(partition);
         return utp != null && utp.isAssigned;
     }
@@ -335,7 +351,7 @@ class ConsumerTask implements Runnable, Closeable {
         }
     }
 
-    public Set<Integer> metadataPartitionsAssigned() {
+    Set<Integer> metadataPartitionsAssigned() {
         return Collections.unmodifiableSet(assignedMetadataPartitions);
     }
 

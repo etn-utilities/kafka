@@ -22,6 +22,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -40,7 +41,7 @@ public class ProducerInterceptorsTest {
     private int onSendCount = 0;
 
     private class AppendProducerInterceptor implements ProducerInterceptor<Integer, String> {
-        private String appendStr = "";
+        private final String appendStr;
         private boolean throwExceptionOnSend = false;
         private boolean throwExceptionOnAck = false;
 
@@ -103,7 +104,7 @@ public class ProducerInterceptorsTest {
         AppendProducerInterceptor interceptor2 = new AppendProducerInterceptor("Two");
         interceptorList.add(interceptor1);
         interceptorList.add(interceptor2);
-        ProducerInterceptors<Integer, String> interceptors = new ProducerInterceptors<>(interceptorList);
+        ProducerInterceptors<Integer, String> interceptors = new ProducerInterceptors<>(interceptorList, null);
 
         // verify that onSend() mutates the record as expected
         ProducerRecord<Integer, String> interceptedRecord = interceptors.onSend(producerRecord);
@@ -141,7 +142,7 @@ public class ProducerInterceptorsTest {
         AppendProducerInterceptor interceptor2 = new AppendProducerInterceptor("Two");
         interceptorList.add(interceptor1);
         interceptorList.add(interceptor2);
-        ProducerInterceptors<Integer, String> interceptors = new ProducerInterceptors<>(interceptorList);
+        ProducerInterceptors<Integer, String> interceptors = new ProducerInterceptors<>(interceptorList, null);
 
         // verify onAck is called on all interceptors
         RecordMetadata meta = new RecordMetadata(tp, 0, 0, 0, 0, 0);
@@ -165,7 +166,7 @@ public class ProducerInterceptorsTest {
         List<ProducerInterceptor<Integer, String>> interceptorList = new ArrayList<>();
         AppendProducerInterceptor interceptor1 = new AppendProducerInterceptor("One");
         interceptorList.add(interceptor1);
-        ProducerInterceptors<Integer, String> interceptors = new ProducerInterceptors<>(interceptorList);
+        ProducerInterceptors<Integer, String> interceptors = new ProducerInterceptors<>(interceptorList, null);
 
         // verify that metadata contains both topic and partition
         interceptors.onSendError(producerRecord,
@@ -205,4 +206,3 @@ public class ProducerInterceptorsTest {
         interceptors.close();
     }
 }
-

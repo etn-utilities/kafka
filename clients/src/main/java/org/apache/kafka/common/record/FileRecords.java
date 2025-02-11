@@ -161,7 +161,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
         if (position < 0)
             throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
-        if (position > currentSizeInBytes - start)
+        // position should always be relative to the start of the file hence compare with file size
+        // to verify if the position is within the file.
+        if (position > currentSizeInBytes)
             throw new IllegalArgumentException("Slice from position " + position + " exceeds end position of " + this);
         if (size < 0)
             throw new IllegalArgumentException("Invalid size: " + size + " in read from " + this);
@@ -306,18 +308,18 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     /**
-     * Search forward for the file position of the last offset that is greater than or equal to the target offset
-     * and return its physical position and the size of the message (including log overhead) at the returned offset. If
-     * no such offsets are found, return null.
+     * Search forward for the file position of the message batch whose last offset that is greater
+     * than or equal to the target offset. If no such batch is found, return null.
      *
      * @param targetOffset The offset to search for.
      * @param startingPosition The starting position in the file to begin searching from.
+     * @return the batch's base offset, its physical position, and its size (including log overhead)
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {
             long offset = batch.lastOffset();
             if (offset >= targetOffset)
-                return new LogOffsetPosition(offset, batch.position(), batch.sizeInBytes());
+                return new LogOffsetPosition(batch.baseOffset(), batch.position(), batch.sizeInBytes());
         }
         return null;
     }
@@ -355,18 +357,18 @@ public class FileRecords extends AbstractRecords implements Closeable {
      */
     public TimestampAndOffset largestTimestampAfter(int startingPosition) {
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
-        long offsetOfMaxTimestamp = -1L;
+        long shallowOffsetOfMaxTimestamp = -1L;
         int leaderEpochOfMaxTimestamp = RecordBatch.NO_PARTITION_LEADER_EPOCH;
 
         for (RecordBatch batch : batchesFrom(startingPosition)) {
             long timestamp = batch.maxTimestamp();
             if (timestamp > maxTimestamp) {
                 maxTimestamp = timestamp;
-                offsetOfMaxTimestamp = batch.lastOffset();
+                shallowOffsetOfMaxTimestamp = batch.lastOffset();
                 leaderEpochOfMaxTimestamp = batch.partitionLeaderEpoch();
             }
         }
-        return new TimestampAndOffset(maxTimestamp, offsetOfMaxTimestamp,
+        return new TimestampAndOffset(maxTimestamp, shallowOffsetOfMaxTimestamp,
                 maybeLeaderEpoch(leaderEpochOfMaxTimestamp));
     }
 

@@ -16,26 +16,6 @@
  */
 package org.apache.kafka.server.util;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.same;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.when;
-
-import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Queue;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-
 import org.apache.kafka.clients.ClientRequest;
 import org.apache.kafka.clients.ClientResponse;
 import org.apache.kafka.clients.KafkaClient;
@@ -47,10 +27,32 @@ import org.apache.kafka.common.internals.FatalExitError;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.utils.Time;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
+
+import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Queue;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.same;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 public class InterBrokerSendThreadTest {
 
@@ -137,7 +139,7 @@ public class InterBrokerSendThreadTest {
 
         Throwable thrown = throwable.get();
         assertNotNull(thrown);
-        assertTrue(thrown instanceof FatalExitError);
+        assertInstanceOf(FatalExitError.class, thrown);
     }
 
     @Test
@@ -164,15 +166,15 @@ public class InterBrokerSendThreadTest {
         final TestInterBrokerSendThread sendThread = new TestInterBrokerSendThread();
 
         final ClientRequest clientRequest =
-            new ClientRequest("dest", request, 0, "1", 0, true, requestTimeoutMs, handler.handler);
+            new ClientRequest("dest", request, 0, "1", 0, true, requestTimeoutMs, handler.handler());
 
         when(networkClient.newClientRequest(
             ArgumentMatchers.eq("1"),
-            same(handler.request),
+            same(handler.request()),
             anyLong(),
             ArgumentMatchers.eq(true),
             ArgumentMatchers.eq(requestTimeoutMs),
-            same(handler.handler)
+            same(handler.handler())
         )).thenReturn(clientRequest);
 
         when(networkClient.ready(node, time.milliseconds())).thenReturn(true);
@@ -185,11 +187,11 @@ public class InterBrokerSendThreadTest {
         verify(networkClient)
             .newClientRequest(
                 ArgumentMatchers.eq("1"),
-                same(handler.request),
+                same(handler.request()),
                 anyLong(),
                 ArgumentMatchers.eq(true),
                 ArgumentMatchers.eq(requestTimeoutMs),
-                same(handler.handler));
+                same(handler.handler()));
         verify(networkClient).ready(any(), anyLong());
         verify(networkClient).send(same(clientRequest), anyLong());
         verify(networkClient).poll(anyLong(), anyLong());
@@ -207,15 +209,15 @@ public class InterBrokerSendThreadTest {
         final TestInterBrokerSendThread sendThread = new TestInterBrokerSendThread();
 
         final ClientRequest clientRequest =
-            new ClientRequest("dest", request, 0, "1", 0, true, requestTimeoutMs, handler.handler);
+            new ClientRequest("dest", request, 0, "1", 0, true, requestTimeoutMs, handler.handler());
 
         when(networkClient.newClientRequest(
             ArgumentMatchers.eq("1"),
-            same(handler.request),
+            same(handler.request()),
             anyLong(),
             ArgumentMatchers.eq(true),
             ArgumentMatchers.eq(requestTimeoutMs),
-            same(handler.handler)
+            same(handler.handler())
         )).thenReturn(clientRequest);
 
         when(networkClient.ready(node, time.milliseconds())).thenReturn(false);
@@ -234,11 +236,11 @@ public class InterBrokerSendThreadTest {
         verify(networkClient)
             .newClientRequest(
                 ArgumentMatchers.eq("1"),
-                same(handler.request),
+                same(handler.request()),
                 anyLong(),
                 ArgumentMatchers.eq(true),
                 ArgumentMatchers.eq(requestTimeoutMs),
-                same(handler.handler));
+                same(handler.handler()));
         verify(networkClient).ready(any(), anyLong());
         verify(networkClient).connectionDelay(any(), anyLong());
         verify(networkClient).poll(anyLong(), anyLong());
@@ -259,16 +261,16 @@ public class InterBrokerSendThreadTest {
 
         final ClientRequest clientRequest =
             new ClientRequest(
-                "dest", request, 0, "1", time.milliseconds(), true, requestTimeoutMs, handler.handler);
+                "dest", request, 0, "1", time.milliseconds(), true, requestTimeoutMs, handler.handler());
         time.sleep(1500L);
 
         when(networkClient.newClientRequest(
             ArgumentMatchers.eq("1"),
-            same(handler.request),
-            ArgumentMatchers.eq(handler.creationTimeMs),
+            same(handler.request()),
+            ArgumentMatchers.eq(handler.creationTimeMs()),
             ArgumentMatchers.eq(true),
             ArgumentMatchers.eq(requestTimeoutMs),
-            same(handler.handler)
+            same(handler.handler())
         )).thenReturn(clientRequest);
 
         // make the node unready so the request is not cleared
@@ -287,11 +289,11 @@ public class InterBrokerSendThreadTest {
         verify(networkClient)
             .newClientRequest(
                 ArgumentMatchers.eq("1"),
-                same(handler.request),
-                ArgumentMatchers.eq(handler.creationTimeMs),
+                same(handler.request()),
+                ArgumentMatchers.eq(handler.creationTimeMs()),
                 ArgumentMatchers.eq(true),
                 ArgumentMatchers.eq(requestTimeoutMs),
-                same(handler.handler));
+                same(handler.handler()));
         verify(networkClient).ready(any(), anyLong());
         verify(networkClient).connectionDelay(any(), anyLong());
         verify(networkClient).poll(anyLong(), anyLong());
@@ -317,9 +319,9 @@ public class InterBrokerSendThreadTest {
         final InterBrokerSendThread thread =
             new TestInterBrokerSendThread(networkClient, t -> {
                 if (isShuttingDown)
-                    assertTrue(t instanceof InterruptedException);
+                    assertInstanceOf(InterruptedException.class, t);
                 else
-                    assertTrue(t instanceof FatalExitError);
+                    assertInstanceOf(FatalExitError.class, t);
                 exception.getAndSet(t);
             });
 

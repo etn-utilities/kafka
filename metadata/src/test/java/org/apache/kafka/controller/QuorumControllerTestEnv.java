@@ -17,9 +17,11 @@
 
 package org.apache.kafka.controller;
 
+import org.apache.kafka.metadata.FakeKafkaConfigSchema;
 import org.apache.kafka.metadata.bootstrap.BootstrapMetadata;
 import org.apache.kafka.metalog.LocalLogManagerTestEnv;
 import org.apache.kafka.raft.LeaderAndEpoch;
+import org.apache.kafka.server.common.EligibleLeaderReplicasVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 import org.apache.kafka.server.fault.MockFaultHandler;
 import org.apache.kafka.test.TestUtils;
@@ -82,6 +84,7 @@ public class QuorumControllerTestEnv implements AutoCloseable {
                 controllerBuilderInitializer,
                 sessionTimeoutMillis,
                 leaderImbalanceCheckIntervalNs,
+                bootstrapMetadata.metadataVersion().isElrSupported(),
                 bootstrapMetadata);
         }
     }
@@ -91,6 +94,7 @@ public class QuorumControllerTestEnv implements AutoCloseable {
         Consumer<QuorumController.Builder> controllerBuilderInitializer,
         OptionalLong sessionTimeoutMillis,
         OptionalLong leaderImbalanceCheckIntervalNs,
+        boolean eligibleLeaderReplicasEnabled,
         BootstrapMetadata bootstrapMetadata
     ) throws Exception {
         this.logEnv = logEnv;
@@ -101,20 +105,28 @@ public class QuorumControllerTestEnv implements AutoCloseable {
             for (int nodeId = 0; nodeId < numControllers; nodeId++) {
                 QuorumController.Builder builder = new QuorumController.Builder(nodeId, logEnv.clusterId());
                 builder.setRaftClient(logEnv.logManagers().get(nodeId));
+                if (eligibleLeaderReplicasEnabled) {
+                    bootstrapMetadata = bootstrapMetadata.copyWithFeatureRecord(
+                        EligibleLeaderReplicasVersion.FEATURE_NAME,
+                        EligibleLeaderReplicasVersion.ELRV_1.featureLevel()
+                    );
+                }
                 builder.setBootstrapMetadata(bootstrapMetadata);
                 builder.setLeaderImbalanceCheckIntervalNs(leaderImbalanceCheckIntervalNs);
-                builder.setQuorumFeatures(new QuorumFeatures(nodeId, QuorumFeatures.defaultFeatureMap(true), nodeIds));
-                sessionTimeoutMillis.ifPresent(timeout -> {
-                    builder.setSessionTimeoutNs(NANOSECONDS.convert(timeout, TimeUnit.MILLISECONDS));
-                });
+                builder.setQuorumFeatures(new QuorumFeatures(nodeId, QuorumFeatures.defaultSupportedFeatureMap(true), nodeIds));
+                sessionTimeoutMillis.ifPresent(timeout ->
+                    builder.setSessionTimeoutNs(NANOSECONDS.convert(timeout, TimeUnit.MILLISECONDS))
+                );
                 MockFaultHandler fatalFaultHandler = new MockFaultHandler("fatalFaultHandler");
                 builder.setFatalFaultHandler(fatalFaultHandler);
                 fatalFaultHandlers.put(nodeId, fatalFaultHandler);
                 MockFaultHandler nonFatalFaultHandler = new MockFaultHandler("nonFatalFaultHandler");
                 builder.setNonFatalFaultHandler(nonFatalFaultHandler);
+                builder.setConfigSchema(FakeKafkaConfigSchema.INSTANCE);
                 nonFatalFaultHandlers.put(nodeId, fatalFaultHandler);
                 controllerBuilderInitializer.accept(builder);
-                this.controllers.add(builder.build());
+                QuorumController controller = builder.build();
+                this.controllers.add(controller);
             }
         } catch (Exception e) {
             close();

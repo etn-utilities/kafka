@@ -16,12 +16,14 @@
  */
 package kafka.server.logger;
 
-import kafka.utils.Log4jController;
+import kafka.utils.LoggingController;
+
 import org.apache.kafka.clients.admin.AlterConfigOp;
 import org.apache.kafka.clients.admin.AlterConfigOp.OpType;
 import org.apache.kafka.common.errors.InvalidConfigurationException;
 import org.apache.kafka.common.errors.InvalidRequestException;
 import org.apache.kafka.common.message.IncrementalAlterConfigsRequestData.AlterableConfig;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -34,9 +36,9 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class RuntimeLoggerManagerTest {
-    private final static Logger LOG = LoggerFactory.getLogger(RuntimeLoggerManagerTest.class);
+    private static final Logger LOG = LoggerFactory.getLogger(RuntimeLoggerManagerTest.class);
 
-    private final static RuntimeLoggerManager MANAGER = new RuntimeLoggerManager(5, LOG);
+    private static final RuntimeLoggerManager MANAGER = new RuntimeLoggerManager(5, LOG);
 
     @Test
     public void testValidateSetLogLevelConfig() {
@@ -80,18 +82,18 @@ public class RuntimeLoggerManagerTest {
     @Test
     public void testValidateSetRootLogLevelConfig() {
         MANAGER.validateLogLevelConfigs(Arrays.asList(new AlterableConfig().
-                setName(Log4jController.ROOT_LOGGER()).
+                setName(LoggingController.ROOT_LOGGER()).
                 setConfigOperation(OpType.SET.id()).
                 setValue("TRACE")));
     }
 
     @Test
     public void testValidateRemoveRootLogLevelConfigNotAllowed() {
-        assertEquals("Removing the log level of the " + Log4jController.ROOT_LOGGER() +
+        assertEquals("Removing the log level of the " + LoggingController.ROOT_LOGGER() +
             " logger is not allowed",
             Assertions.assertThrows(InvalidRequestException.class,
                 () -> MANAGER.validateLogLevelConfigs(Arrays.asList(new AlterableConfig().
-                    setName(Log4jController.ROOT_LOGGER()).
+                    setName(LoggingController.ROOT_LOGGER()).
                     setConfigOperation(OpType.DELETE.id()).
                     setValue("")))).getMessage());
     }
