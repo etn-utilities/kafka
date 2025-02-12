@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+   <metadata>
+      <!-- Identifier that must be unique within the hosting gallery -->
+      <id>eaton.kafka</id>
+
+      <!-- Short description usually shown for the package when browsing gallery -->
+      <description>Kafka with fixes to run smoothly on Windows</description>
+      <version>3.9.0</version>
+      <authors>Apache, Martin Pelak (https://github.com/apache/kafka/pull/12331), Eaton</authors>
+      <owners>Brightlayer Utilities</owners>
+      <projectUrl>https://github.com/etn-utilities/kafka</projectUrl>
+      <repository type="git" url="https://github.com/etn-utilities/kafka" branch="eaton-3.9.0-windows" />
+
+      <!-- Tags appear in the gallery and can be used for tag searches -->
+      <tags>kafka</tags>
+	  
+      <!-- If true, this value prompts the user to accept the license when installing the package-->
+      <requireLicenseAcceptance>false</requireLicenseAcceptance>
+
+      <contentFiles>
+        <files include="any/any/**" buildAction="None" copyToOutput="true"/>
+      </contentFiles>
+   </metadata>
+
+   <files>
+      <!-- List here files to be included in the nupkg. Path are relative to root of the repository.
+           See https://learn.microsoft.com/en-us/nuget/create-packages/creating-a-package -->
+      <file src="README.md" target="" />
+      <file src="extract\**" target="contentFiles/any/any" />
+   </files>
+</package>
