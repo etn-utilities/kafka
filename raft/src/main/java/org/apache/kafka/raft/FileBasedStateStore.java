@@ -73,11 +73,6 @@ public class FileBasedStateStore implements QuorumStateStore {
         return stateFile.getAbsolutePath();
     }
 	
-	@Override
-    public ElectionState readElectionState() {
-        if (!stateFile.exists()) {
-            return null;
-        }
 
         QuorumStateData data = readStateFromFile(stateFile);
 
