@@ -72,19 +72,6 @@ public class FileBasedStateStore implements QuorumStateStore {
     public String path() {
         return stateFile.getAbsolutePath();
     }
-	
-
-        QuorumStateData data = readStateFromFile(stateFile);
-
-        return new ElectionState(data.leaderEpoch(),
-            data.leaderId() == UNKNOWN_LEADER_ID ? OptionalInt.empty() :
-                OptionalInt.of(data.leaderId()),
-            data.votedId() == NOT_VOTED ? OptionalInt.empty() :
-                OptionalInt.of(data.votedId()),
-            data.currentVoters()
-                .stream().map(Voter::voterId).collect(Collectors.toSet()));
-    }
-
     private QuorumStateData readStateFromFile(File file) {
         try (final BufferedReader reader = Files.newBufferedReader(file.toPath())) {
             final String line = reader.readLine();
