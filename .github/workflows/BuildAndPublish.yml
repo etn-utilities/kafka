@@ -23,8 +23,8 @@ jobs:
     - name: Get source files
       uses: actions/checkout@v3
     
-    - name: Retrieve current year
-      run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
+    # - name: Retrieve current year
+    #   run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
       
     - name: Set up JDK 17
       uses: actions/setup-java@v3
