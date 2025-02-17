@@ -1,0 +1,63 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+# This workflow will build a Java project with Gradle and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
+
+name: Build and Publish NuGet
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Get source files
+  # actions/checkout@v4.1.2
+      uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633
+    
+    # - name: Retrieve current year
+    #   run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
+      
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    # NuGet/setup-nuget@v1.2.0
+    - name: Setup NuGet
+      uses: NuGet/setup-nuget@296fd3ccf8528660c91106efefe2364482f86d6f
+      
+    - name: Add private NuGet source
+      run: nuget sources Add -Username ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }} -StorePasswordInClearText -Name github -Source "https://nuget.pkg.github.com/etn-utilities/index.json"
+
+    - name: Build with Gradle
+      uses: gradle/gradle-build-action@vac2d340dc04d9e1113182899e983b5400c17cda1
+      with:
+        arguments: releaseTarGz
+        
+#    - name: Find Kafka zip
+#      run: find . -name "kafka*.tgz"
+        
+    - name: Extract Kafka package
+      run: |
+        ARCHIVE_PATH=$(find . -name "kafka_2.13-3.9.0.tgz")
+        mkdir -p ./extract/kafka
+        tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
+  
+#    - name: Quick glance at extraction
+#      run: ls -R ./extract
+  
+    - name: Generate and publish NuGet packages
+      run: |
+        nuget pack ./nupkg/kafka.nuspec -noninteractive -basepath .
+        nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} -SkipDuplicate -NonInteractive
