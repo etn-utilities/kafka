@@ -40,7 +40,7 @@ jobs:
       run: nuget sources Add -Username ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }} -StorePasswordInClearText -Name github -Source "https://nuget.pkg.github.com/etn-utilities/index.json"
 
     - name: Build with Gradle
-      uses: gradle/gradle-build-action@v3
+      uses: gradle/gradle-build-action@vac2d340dc04d9e1113182899e983b5400c17cda1
       with:
         arguments: releaseTarGz
         
