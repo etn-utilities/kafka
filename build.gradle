@@ -27,6 +27,7 @@ buildscript {
   dependencies {
     // For Apache Rat plugin to ignore non-Git files
     classpath "org.ajoberstar.grgit:grgit-core:$versions.grgit"
+    implementation 'org.slf4j:slf4j-simple:1.7.32'
   }
 }
 
