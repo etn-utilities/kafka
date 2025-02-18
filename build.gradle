@@ -316,8 +316,8 @@ subprojects {
   java {
     // We should only set this if Java version is < 9 (--release is recommended for >= 9), but the Scala plugin for IntelliJ sets
     // `-target` incorrectly if this is unset
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = minJavaVersion
+    targetCompatibility = minJavaVersion
   }
 
   if (shouldPublish) {
@@ -853,7 +853,7 @@ project(':server') {
     implementation libs.jacksonDatabind
 
     implementation libs.slf4jApi
-    implementation 'org.slf4j:slf4j-simple:1.7.32'
+    implementation 'org.slf4j:slf4j-simple:1.7.30'
 
     compileOnly libs.reload4j
 
