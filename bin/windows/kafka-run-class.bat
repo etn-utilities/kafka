@@ -90,14 +90,10 @@ for %%p in (api runtime file json tools) do (
 )
 
 rem Classpath addition for release
-for %%i in ("%BASE_DIR%\libs\*") do (
-	call :concat "%%i"
-)
+call :concat "%BASE_DIR%\libs\*"
 
 rem Classpath addition for core
-for %%i in ("%BASE_DIR%\core\build\libs\kafka_%SCALA_BINARY_VERSION%*.jar") do (
-	call :concat "%%i"
-)
+call :concat "%BASE_DIR%\core\build\libs\*"
 
 rem JMX settings
 IF ["%KAFKA_JMX_OPTS%"] EQU [""] (
@@ -110,13 +106,13 @@ IF ["%JMX_PORT%"] NEQ [""] (
 )
 
 rem Log directory to use
-IF ["%LOG_DIR%"] EQU [""] (
-    set LOG_DIR=%BASE_DIR%/logs
+IF NOT DEFINED LOG_DIR (
+    set "LOG_DIR=%BASE_DIR%/logs"
 )
 
 rem Log4j settings
-IF ["%KAFKA_LOG4J_OPTS%"] EQU [""] (
-	set KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:%BASE_DIR%/config/tools-log4j.properties
+IF NOT DEFINED KAFKA_LOG4J_OPTS (
+	set "KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:%BASE_DIR%/config/tools-log4j.properties"
 ) ELSE (
   rem create logs directory
   IF not exist "%LOG_DIR%" (
@@ -176,7 +172,7 @@ IF not defined CLASSPATH (
 	EXIT /B 2
 )
 
-set COMMAND=%JAVA% %KAFKA_HEAP_OPTS% %KAFKA_JVM_PERFORMANCE_OPTS% %KAFKA_JMX_OPTS% %KAFKA_LOG4J_OPTS% -cp "%CLASSPATH%" %KAFKA_OPTS% %*
+set COMMAND=%JAVA% %KAFKA_HEAP_OPTS% %KAFKA_JVM_PERFORMANCE_OPTS% %KAFKA_JMX_OPTS% %KAFKA_LOG4J_OPTS% -cp %CLASSPATH% %KAFKA_OPTS% %*
 rem echo.
 rem echo %COMMAND%
 rem echo.
