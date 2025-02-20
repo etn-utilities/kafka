@@ -16,48 +16,52 @@ permissions:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - name: Get source files
-  # actions/checkout@v4.1.2
-      uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633
-    
-    # - name: Retrieve current year
-    #   run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
-      
-    - name: Set up JDK 17
-      uses: actions/setup-java@v3
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        
-    # NuGet/setup-nuget@v1.2.0
-    - name: Setup NuGet
-      uses: NuGet/setup-nuget@296fd3ccf8528660c91106efefe2364482f86d6f
-      
-    - name: Add private NuGet source
-      run: nuget sources Add -Username ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }} -StorePasswordInClearText -Name github -Source "https://nuget.pkg.github.com/etn-utilities/index.json"
+      - name: Get source files
+        uses: actions/checkout@v4
 
-    - name: Build with Gradle
-      uses: gradle/gradle-build-action@vac2d340dc04d9e1113182899e983b5400c17cda1
-      with:
-        arguments: releaseTarGz
-        
-#    - name: Find Kafka zip
-#      run: find . -name "kafka*.tgz"
-        
-    - name: Extract Kafka package
-      run: |
-        ARCHIVE_PATH=$(find . -name "kafka_2.13-3.9.0.tgz")
-        mkdir -p ./extract/kafka
-        tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
-  
-#    - name: Quick glance at extraction
-#      run: ls -R ./extract
-  
-    - name: Generate and publish NuGet packages
-      run: |
-        nuget pack ./nupkg/kafka.nuspec -noninteractive -basepath .
-        nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} -SkipDuplicate -NonInteractive
+      - name: Retrieve current year
+        run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Add private NuGet source
+        run: dotnet nuget add source "https://nuget.pkg.github.com/etn-utilities/index.json" --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Assemble the project
+        run: gradle assemble
+
+      - name: Run the tests
+        run: gradle test
+
+      - name: Build with Gradle
+        run: ./gradlew releaseTarGz
+
+      - name: Find Kafka zip
+        run: find . -name "*kafka*.tgz"
+
+      - name: Extract Kafka package
+        run: |
+          ARCHIVE_PATH=$(find . -name "kafka_2.13-3.9.0.tgz")
+          mkdir -p ./extract/kafka
+          tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
+
+      - name: Generate and publish NuGet packages
+        run: |
+          dotnet pack ./nupkg/kafka.nuspec --no-build --output .
+          dotnet nuget push *.nupkg --source github --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+
