@@ -1,0 +1,38 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+# This workflow will build a Java project with Gradle and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
+
+name: Pull Request Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    # actions/checkout@v4.2.2
+    - name: Get source files
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+    # actions/setup-java@v4.7.0
+    - name: Set up JDK 17
+      uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    #gradle/gradle-build-action@v3.5.0
+    - name: Build with Gradle
+      uses: gradle/gradle-build-action@ac2d340dc04d9e1113182899e983b5400c17cda1
+      with:
+        arguments: releaseTarGz

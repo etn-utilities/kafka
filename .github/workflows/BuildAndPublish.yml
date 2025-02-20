@@ -1,0 +1,74 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+# This workflow will build a Java project with Gradle and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
+
+name: Build and Publish NuGet
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    # actions/checkout@v4.2.2
+    - name: Get source files
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+    - name: Retrieve current year
+      run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
+
+    # actions/setup-java@v4.7.0
+    - name: Set up JDK 17
+      uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    # actions/setup-dotnet@v4.3.0
+    - name: Setup .NET
+      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab
+      with:
+        dotnet-version: '6.0.x'
+
+    - name: Add private NuGet source
+      run: dotnet nuget add source "https://nuget.pkg.github.com/etn-utilities/index.json" --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github
+      
+    #gradle/setup-gradle@v3.5.0
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@94baf225fe0a508e581a564467443d0e2379123b
+
+    - name: Assemble the project
+      run: gradle assemble
+
+    - name: Run the tests
+      run: gradle test
+
+    - name: Build with Gradle
+      run: ./gradlew releaseTarGz
+
+    - name: Find Kafka zip
+      run: find . -name "kafka*.tgz"
+
+    - name: Extract Kafka package
+      run: |
+        ARCHIVE_PATH=$(find . -name "kafka_2.13-3.9.0.tgz")
+        mkdir -p ./extract/kafka
+        tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
+  
+#    - name: Quick glance at extraction
+#      run: ls -R ./extract
+
+    - name: Generate and publish NuGet packages
+      run: |
+        dotnet pack ./nupkg/kafka.nuspec --no-build --output .
+        dotnet nuget push *.nupkg --source github --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
