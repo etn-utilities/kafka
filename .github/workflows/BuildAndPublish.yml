@@ -42,12 +42,19 @@ jobs:
 
     - name: Add private NuGet source
       run: dotnet nuget add source "https://nuget.pkg.github.com/etn-utilities/index.json" --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github
+      
+    #gradle/setup-gradle@v3.5.0
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@ac2d340dc04d9e1113182899e983b5400c17cda1
 
-    #gradle/gradle-build-action@v3.5.0
+    - name: Assemble the project
+      run: gradle assemble
+
+    - name: Run the tests
+      run: gradle test
+
     - name: Build with Gradle
-      uses: gradle/gradle-build-action@ac2d340dc04d9e1113182899e983b5400c17cda1
-      with:
-        arguments: releaseTarGz
+      run: ./gradlew releaseTarGz
 
     - name: Find Kafka zip
       run: find . -name "kafka*.tgz"
