@@ -20,15 +20,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    # actions/checkout@v4.2.2
+    - name: Get source files
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+    # actions/setup-java@v4.7.0
     - name: Set up JDK 17
-      uses: actions/setup-java@v3
+      uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12
       with:
         java-version: '17'
         distribution: 'temurin'
 
+    #gradle/gradle-build-action@v3.5.0
     - name: Build with Gradle
-      uses: gradle/gradle-build-action@v3
+      uses: gradle/gradle-build-action@ac2d340dc04d9e1113182899e983b5400c17cda1
       with:
         arguments: releaseTarGz
