@@ -853,6 +853,7 @@ project(':server') {
     implementation libs.jacksonDatabind
 
     implementation libs.slf4jApi
+    implementation 'org.slf4j:slf4j-simple:1.7.30'
 
     compileOnly libs.reload4j
 

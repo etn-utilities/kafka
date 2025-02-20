@@ -6,7 +6,7 @@ rem The ASF licenses this file to You under the Apache License, Version 2.0
 rem (the "License"); you may not use this file except in compliance with
 rem the License.  You may obtain a copy of the License at
 rem
-rem     http://www.apache.org/licenses/LICENSE-2.0
+rem    http://www.apache.org/licenses/LICENSE-2.0
 rem
 rem Unless required by applicable law or agreed to in writing, software
 rem distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,16 +15,21 @@ rem See the License for the specific language governing permissions and
 rem limitations under the License.
 
 IF [%1] EQU [] (
-	echo USAGE: %0 zookeeper.properties
-	EXIT /B 1
+    echo USAGE: %0 mm2.properties
+    EXIT 1
 )
 
 SetLocal
-IF NOT DEFINED KAFKA_LOG4J_OPTS (
-    set "KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:%~dp0../../config/log4j.properties"
+rem Using pushd popd to set BASE_DIR to the absolute path
+pushd %~dp0..\..
+set BASE_DIR=%CD%
+popd
+
+rem Log4j settings
+IF ["%KAFKA_LOG4J_OPTS%"] EQU [""] (
+    rem SET KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:"%BASE_DIR%/../config/connect-log4j.properties"
+    SET "KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:%BASE_DIR%/config/log4j.properties"
 )
-IF ["%KAFKA_HEAP_OPTS%"] EQU [""] (
-    set KAFKA_HEAP_OPTS=-Xmx512M -Xms512M
-)
-"%~dp0kafka-run-class.bat" org.apache.zookeeper.server.quorum.QuorumPeerMain %*
+
+"%~dp0kafka-run-class.bat" org.apache.kafka.connect.mirror.MirrorMaker %*
 EndLocal

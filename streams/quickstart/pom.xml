@@ -23,7 +23,7 @@
     <artifactId>streams-quickstart</artifactId>
     <packaging>pom</packaging>
     <version>3.9.0</version>
-
+	
     <name>Kafka Streams :: Quickstart</name>
 
     <parent>

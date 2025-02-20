@@ -39,6 +39,8 @@ import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.util.Optional;
 
@@ -99,7 +101,7 @@ public class FileQuorumStateStore implements QuorumStateStore {
                 throw new IOException("Deserialized node " + readNode +
                     " is not an object node");
             }
-            final ObjectNode dataObject = (ObjectNode) readNode;
+            ObjectNode dataObject = (ObjectNode) readNode;
 
             JsonNode dataVersionNode = dataObject.get(DATA_VERSION);
             if (dataVersionNode == null) {
@@ -170,16 +172,15 @@ public class FileQuorumStateStore implements QuorumStateStore {
         log.trace("Writing tmp quorum state {}", temp.getAbsolutePath());
 
         try {
-            try (final FileOutputStream fileOutputStream = new FileOutputStream(temp);
-                 final BufferedWriter writer = new BufferedWriter(
-                     new OutputStreamWriter(fileOutputStream, StandardCharsets.UTF_8)
-                 )
-            ) {
+            final OpenOption[] options = {StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.SPARSE};
+
+            try (BufferedWriter writer = Files.newBufferedWriter(temp.toPath(), StandardCharsets.UTF_8, options)) {
                 ObjectNode jsonState = (ObjectNode) QuorumStateDataJsonConverter.write(state, version);
                 jsonState.set(DATA_VERSION, new ShortNode(version));
                 writer.write(jsonState.toString());
                 writer.flush();
-                fileOutputStream.getFD().sync();
+                writer.close();
             }
             Utils.atomicMoveWithFallback(temp.toPath(), stateFile.toPath());
         } catch (IOException e) {
