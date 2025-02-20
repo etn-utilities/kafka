@@ -6,6 +6,7 @@
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
 
 name: Build and Publish NuGet
+
 on:
   workflow_dispatch:
 
@@ -19,40 +20,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up JDK 11
-      uses: actions/setup-java@v3
+    # actions/checkout@v4.2.2
+    - name: Get source files
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+    - name: Retrieve current year
+      run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
+
+    # actions/setup-java@v4.7.0
+    - name: Set up JDK 17
+      uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12
       with:
-        java-version: '11'
+        java-version: '17'
         distribution: 'temurin'
-        
+
+    # NuGet/setup-nuget@v2.0.1
     - name: Setup NuGet
-      uses: NuGet/setup-nuget@296fd3ccf8528660c91106efefe2364482f86d6f
-      
-    - name: Install Mono
-      run: sudo apt-get install -y mono-complete
+      uses: NuGet/setup-nuget@323ab0502cd38fdc493335025a96c8fdb0edc71f
 
     - name: Add private NuGet source
       run: nuget sources Add -Username ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }} -StorePasswordInClearText -Name github -Source "https://nuget.pkg.github.com/etn-utilities/index.json"
 
+    #gradle/gradle-build-action@v3.5.0
     - name: Build with Gradle
-      uses: gradle/gradle-build-action@v2.6.0
+      uses: gradle/gradle-build-action@ac2d340dc04d9e1113182899e983b5400c17cda1
       with:
         arguments: releaseTarGz
 
-#    - name: Find Kafka zip
-#      run: find . -name "kafka*.tgz"
-        
+    - name: Find Kafka zip
+      run: find . -name "kafka*.tgz"
+
     - name: Extract Kafka package
       run: |
-        ARCHIVE_PATH=$(find . -name "kafka_*-*-SNAPSHOT.tgz")
+        ARCHIVE_PATH=$(find . -name "kafka_2.13-3.9.0.tgz")
         mkdir -p ./extract/kafka
         tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
   
 #    - name: Quick glance at extraction
 #      run: ls -R ./extract
-  
+
     - name: Generate and publish NuGet packages
       run: |
         nuget pack ./nupkg/kafka.nuspec -noninteractive -basepath .
