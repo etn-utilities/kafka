@@ -34,12 +34,14 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # NuGet/setup-nuget@v2.0.1
-    - name: Setup NuGet
-      uses: NuGet/setup-nuget@323ab0502cd38fdc493335025a96c8fdb0edc71f
+    # Setup .NET
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '6.0.x'
 
     - name: Add private NuGet source
-      run: nuget sources Add -Username ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }} -StorePasswordInClearText -Name github -Source "https://nuget.pkg.github.com/etn-utilities/index.json"
+      run: dotnet nuget add source --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github --source "https://nuget.pkg.github.com/etn-utilities/index.json"
 
     #gradle/gradle-build-action@v3.5.0
     - name: Build with Gradle
@@ -61,5 +63,5 @@ jobs:
 
     - name: Generate and publish NuGet packages
       run: |
-        nuget pack ./nupkg/kafka.nuspec -noninteractive -basepath .
-        nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} -SkipDuplicate -NonInteractive
+        dotnet pack ./nupkg/kafka.nuspec --no-build --output .
+        dotnet nuget push *.nupkg --source github --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
