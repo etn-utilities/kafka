@@ -34,14 +34,14 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # Setup .NET
+    # actions/setup-dotnet@v4.3.0
     - name: Setup .NET
-      uses: actions/setup-dotnet@v3
+      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab
       with:
         dotnet-version: '6.0.x'
 
     - name: Add private NuGet source
-      run: dotnet nuget add source --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github --source "https://nuget.pkg.github.com/etn-utilities/index.json"
+      run: dotnet nuget add source "https://nuget.pkg.github.com/etn-utilities/index.json" --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github
 
     #gradle/gradle-build-action@v3.5.0
     - name: Build with Gradle
