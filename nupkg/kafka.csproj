@@ -16,7 +16,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="README.md" Pack="true" PackagePath="" />
-    <None Include="extract\**" Pack="true" PackagePath="contentFiles/any/any" />
+    <None Include="..\README.md" Pack="true" PackagePath="" />
+    <None Include="..\extract\**" Pack="true" PackagePath="contentFiles/any/any" />
   </ItemGroup>
 </Project>

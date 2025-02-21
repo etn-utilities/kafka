@@ -26,7 +26,7 @@
    <files>
       <!-- List here files to be included in the nupkg. Path are relative to root of the repository.
            See https://learn.microsoft.com/en-us/nuget/create-packages/creating-a-package -->
-      <file src="README.md" target="" />
-      <file src="extract\**" target="contentFiles/any/any" />
+      <file src="..\README.md" target="" />
+      <file src="..\extract\**" target="contentFiles/any/any" />
    </files>
 </package>
