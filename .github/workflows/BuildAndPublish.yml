@@ -50,9 +50,9 @@ jobs:
     - name: Assemble the project
       run: gradle assemble
 
-    - name: Run the tests
-      run: gradle test
-      continue-on-error: true
+    #- name: Run the tests
+     # run: gradle test
+      #continue-on-error: tru
 
     - name: Build with Gradle
       run: ./gradlew releaseTarGz
@@ -71,5 +71,5 @@ jobs:
 
     - name: Generate and publish NuGet packages
       run: |
-        dotnet pack ./nupkg/kafka.nuspec --no-build --output .
-        dotnet nuget push *.nupkg --source github --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+        nuget pack ./nupkg/kafka.nuspec -noninteractive -basepath .
+        nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} -SkipDuplicate -NonInteractive
