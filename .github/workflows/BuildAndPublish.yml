@@ -17,7 +17,7 @@ permissions:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
     # actions/checkout@v4.2.2
@@ -34,14 +34,8 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # actions/setup-dotnet@v4.3.0
-    - name: Setup .NET
-      uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab
-      with:
-        dotnet-version: '6.0.x'
-
     - name: Add private NuGet source
-      run: dotnet nuget add source "https://nuget.pkg.github.com/etn-utilities/index.json" --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github
+      run: nuget sources Add -Name "github" -Source "https://nuget.pkg.github.com/etn-utilities/index.json" -UserName ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }}
       
     #gradle/setup-gradle@v3.5.0
     - name: Setup Gradle
@@ -71,6 +65,5 @@ jobs:
 
     - name: Generate and publish NuGet packages
       run: |
-        dotnet pack kafka.csproj -p:NuspecFile=kafka.nuspec -p:NuspecBasePath=. --output . --no-build
-        dotnet nuget push *.nupkg --source github --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
-      working-directory: ./nupkg
+        nuget pack ./nupkg/kafka.nuspec -OutputDirectory .
+        nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
