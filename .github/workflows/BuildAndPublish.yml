@@ -71,5 +71,5 @@ jobs:
 
     - name: Generate and publish NuGet packages
       run: |
-        dotnet pack ./nupkg/kafka.csproj -p:NuspecFile=./nupkg/kafka.nuspec -p:NuspecBasePath=~/projects/app1/nuget --output . --no-build
+        dotnet pack ./nupkg/kafka.csproj -p:NuspecFile=./nupkg/kafka.nuspec -p:NuspecBasePath=..\. --output .
         dotnet nuget push *.nupkg --source github --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
