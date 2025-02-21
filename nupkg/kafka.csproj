@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>eaton.kafka</PackageId>
+    <Version>3.9.0</Version>
+    <Authors>Apache, Martin Pelak (https://github.com/apache/kafka/pull/12331), Eaton</Authors>
+    <Owners>Brightlayer Utilities</Owners>
+    <Description>Kafka with fixes to run smoothly on Windows</Description>
+    <PackageProjectUrl>https://github.com/etn-utilities/kafka</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/etn-utilities/kafka</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryBranch>eaton-3.9.0-windows</RepositoryBranch>
+    <Tags>kafka</Tags>
+    <RequireLicenseAcceptance>false</RequireLicenseAcceptance>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <None Include="extract\**" Pack="true" PackagePath="contentFiles/any/any" />
+  </ItemGroup>
+</Project>
