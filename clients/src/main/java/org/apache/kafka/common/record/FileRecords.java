@@ -465,7 +465,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
                 return FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
                         StandardOpenOption.WRITE);
             } else {
-               return Utils.createPreallocatedFile(file.toPath(), initFileSize);
+                return Utils.createPreallocatedFile(file.toPath(), initFileSize);
             }
         } else {
             return FileChannel.open(file.toPath());
