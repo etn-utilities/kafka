@@ -69,6 +69,9 @@ jobs:
 #    - name: Quick glance at extraction
 #      run: ls -R ./extract
 
+    - name: Restore NuGet packages
+      run: dotnet restore ./nupkg/kafka.csproj
+
     - name: Generate and publish NuGet packages
       run: |
         dotnet pack ./nupkg/kafka.csproj --no-build --output .
