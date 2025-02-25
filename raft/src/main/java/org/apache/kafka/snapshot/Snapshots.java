@@ -178,8 +178,8 @@ public final class Snapshots {
             return lastContainedLogTimestamp(reader);
         }
     }
-	
-	public static boolean makeWritableAndDeleteIfExists(Path path) throws IOException {
+
+    public static boolean makeWritableAndDeleteIfExists(Path path) throws IOException {
         try {
             path.toFile().setWritable(true);
             return Files.deleteIfExists(path);
