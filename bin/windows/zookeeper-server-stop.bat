@@ -14,4 +14,4 @@ rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 rem See the License for the specific language governing permissions and
 rem limitations under the License.
 
-wmic process where (commandline like "%%zookeeper%%" and not name="wmic.exe") delete
+powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*zookeeper*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
