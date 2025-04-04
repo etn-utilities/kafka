@@ -25,7 +25,7 @@ IF NOT DEFINED KAFKA_LOG4J_OPTS (
 )
 IF ["%KAFKA_HEAP_OPTS%"] EQU [""] (
     rem detect OS architecture
-    wmic os get osarchitecture | find /i "32-bit" >nul 2>&1
+    %PROCESSOR_ARCHITECTURE% | find /i "x86" >nul 2>&1
     IF NOT ERRORLEVEL 1 (
         rem 32-bit OS
         set KAFKA_HEAP_OPTS=-Xmx512M -Xms512M

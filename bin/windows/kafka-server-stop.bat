@@ -14,5 +14,4 @@ rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 rem See the License for the specific language governing permissions and
 rem limitations under the License.
 
-wmic process where (commandline like "%%kafka.Kafka%%" and not name="wmic.exe") delete
-rem ps ax | grep -i 'kafka.Kafka' | grep -v grep | awk '{print $1}' | xargs kill -SIGTERM
+powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*kafka.Kafka*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
