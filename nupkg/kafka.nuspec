@@ -6,7 +6,7 @@
 
       <!-- Short description usually shown for the package when browsing gallery -->
       <description>Kafka with fixes to run smoothly on Windows</description>
-      <version>3.9.0</version>
+      <version>3.9.1</version>
       <authors>Apache, Martin Pelak (https://github.com/apache/kafka/pull/12331), Eaton</authors>
       <owners>Brightlayer Utilities</owners>
       <projectUrl>https://github.com/etn-utilities/kafka</projectUrl>
