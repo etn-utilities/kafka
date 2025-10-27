@@ -20,6 +20,7 @@ import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -417,7 +418,6 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
         timeCurrentIdlingStarted = Optional.empty();
     }
 
-
     public void flush() {
         stateMgr.flushCache();
         recordCollector.flush();
@@ -429,7 +429,7 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
      * @return offsets that should be committed for this task
      */
     @Override
-    public Map<TopicPartition, OffsetAndMetadata> prepareCommit() {
+    public Map<TopicPartition, OffsetAndMetadata> prepareCommit(final boolean clean) {
         switch (state()) {
             case CREATED:
             case RESTORING:
@@ -444,6 +444,10 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
                     //
                     // TODO: this should be removed after we decouple caching with emitting
                     flush();
+                    if (!clean) {
+                        log.debug("Skipped preparing {} task with id {} for commit since the task is getting closed dirty.", state(), id);
+                        return null;
+                    }
                     hasPendingTxCommit = eosEnabled;
 
                     log.debug("Prepared {} task for committing", state());
@@ -461,38 +465,29 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
         }
     }
 
-    private OffsetAndMetadata findOffsetAndMetadata(final TopicPartition partition) {
+    private Optional<OffsetAndMetadata> findOffsetAndMetadata(final TopicPartition partition) {
         Long offset = partitionGroup.headRecordOffset(partition);
         Optional<Integer> leaderEpoch = partitionGroup.headRecordLeaderEpoch(partition);
         final long partitionTime = partitionGroup.partitionTimestamp(partition);
         if (offset == null) {
-            try {
-                if (nextOffsetsAndMetadataToBeConsumed.containsKey(partition)) {
-                    final OffsetAndMetadata offsetAndMetadata = nextOffsetsAndMetadataToBeConsumed.get(partition);
-                    offset = offsetAndMetadata.offset();
-                    leaderEpoch = offsetAndMetadata.leaderEpoch();
-                } else {
-                    // This indicates a bug and thus we rethrow it as fatal `IllegalStateException`
-                    throw new IllegalStateException("Stream task " + id + " does not know the partition: " + partition);
-                }
-            } catch (final KafkaException fatal) {
-                throw new StreamsException(fatal);
+            final OffsetAndMetadata offsetAndMetadata = nextOffsetsAndMetadataToBeConsumed.get(partition);
+            if (offsetAndMetadata == null) {
+                // it may be that we have not yet consumed any record from this partition, hence nothing to commit
+                return Optional.empty();
             }
+            offset = offsetAndMetadata.offset();
+            leaderEpoch = offsetAndMetadata.leaderEpoch();
         }
-        return new OffsetAndMetadata(offset,
+        return Optional.of(new OffsetAndMetadata(offset,
                 leaderEpoch,
-                new TopicPartitionMetadata(partitionTime, processorContext.processorMetadata()).encode());
+                new TopicPartitionMetadata(partitionTime, processorContext.processorMetadata()).encode()));
     }
 
     private Map<TopicPartition, OffsetAndMetadata> committableOffsetsAndMetadata() {
-        final Map<TopicPartition, OffsetAndMetadata> committableOffsets;
-
         switch (state()) {
             case CREATED:
             case RESTORING:
-                committableOffsets = Collections.emptyMap();
-
-                break;
+                return Collections.emptyMap();
 
             case RUNNING:
             case SUSPENDED:
@@ -501,12 +496,13 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
                 // input partitions
                 final Set<TopicPartition> partitionsNeedCommit = processorContext.processorMetadata().needsCommit() ?
                     inputPartitions() : consumedOffsets.keySet();
-                committableOffsets = new HashMap<>(partitionsNeedCommit.size());
 
-                for (final TopicPartition partition : partitionsNeedCommit) {
-                    committableOffsets.put(partition, findOffsetAndMetadata(partition));
-                }
-                break;
+                return partitionsNeedCommit.stream()
+                        .map(partition -> findOffsetAndMetadata(partition)
+                                .map(offsetAndMetadata -> Map.entry(partition, offsetAndMetadata)))
+                        .filter(Optional::isPresent)
+                        .map(Optional::get)
+                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
             case CLOSED:
                 throw new IllegalStateException("Illegal state " + state() + " while getting committable offsets for active task " + id);
@@ -515,7 +511,6 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
                 throw new IllegalStateException("Unknown state " + state() + " while post committing active task " + id);
         }
 
-        return committableOffsets;
     }
 
     @Override
@@ -853,7 +848,9 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
             record.offset(),
             record.partition(),
             record.topic(),
-            record.headers()
+            record.headers(),
+            record.rawKey(),
+            record.rawValue()
         );
         updateProcessorContext(currNode, wallClockTime, recordContext);
 
@@ -935,13 +932,15 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
                 recordContext.headers(),
                 node.name(),
                 id(),
-                recordContext.timestamp()
+                recordContext.timestamp(),
+                recordContext.sourceRawKey(),
+                recordContext.sourceRawValue()
             );
 
-            final ProcessingExceptionHandler.ProcessingHandlerResponse response;
+            final ProcessingExceptionHandler.Response processingExceptionResponse;
             try {
-                response = Objects.requireNonNull(
-                    processingExceptionHandler.handle(errorHandlerContext, null, processingException),
+                processingExceptionResponse = Objects.requireNonNull(
+                    processingExceptionHandler.handleError(errorHandlerContext, null, processingException),
                     "Invalid ProcessingExceptionHandler response."
                 );
             } catch (final Exception fatalUserException) {
@@ -956,7 +955,20 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator,
                 throw new FailedProcessingException("Fatal user code error in processing error callback", node.name(), fatalUserException);
             }
 
-            if (response == ProcessingExceptionHandler.ProcessingHandlerResponse.FAIL) {
+            final List<ProducerRecord<byte[], byte[]>> deadLetterQueueRecords = processingExceptionResponse.deadLetterQueueRecords();
+            if (!deadLetterQueueRecords.isEmpty()) {
+                final RecordCollector collector = ((RecordCollector.Supplier) processorContext).recordCollector();
+                for (final ProducerRecord<byte[], byte[]> deadLetterQueueRecord : deadLetterQueueRecords) {
+                    collector.send(
+                            deadLetterQueueRecord.key(),
+                            deadLetterQueueRecord.value(),
+                            node.name(),
+                            processorContext,
+                            deadLetterQueueRecord);
+                }
+            }
+
+            if (processingExceptionResponse.result() == ProcessingExceptionHandler.Result.FAIL) {
                 log.error("Processing exception handler is set to fail upon" +
                         " a processing error. If you would rather have the streaming pipeline" +
                         " continue after a processing error, please set the " +

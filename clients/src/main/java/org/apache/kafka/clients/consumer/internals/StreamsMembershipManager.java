@@ -52,6 +52,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static java.util.Collections.unmodifiableList;
+
 /**
  * Tracks the state of a single member in relationship to a group:
  * <p/>
@@ -171,7 +173,7 @@ public class StreamsMembershipManager implements RequestManager {
     private MemberState state;
 
     /**
-     * Group ID of the Streams group the member will be part of, provided when creating the current
+     * Group ID of the streams group the member will be part of, provided when creating the current
      * membership manager.
      */
     private final String groupId;
@@ -294,7 +296,7 @@ public class StreamsMembershipManager implements RequestManager {
         this.backgroundEventHandler = backgroundEventHandler;
         this.streamsRebalanceData = streamsRebalanceData;
         this.subscriptionState = subscriptionState;
-        metricsManager = new ConsumerRebalanceMetricsManager(metrics);
+        metricsManager = new ConsumerRebalanceMetricsManager(metrics, subscriptionState);
         this.time = time;
     }
 
@@ -661,7 +663,7 @@ public class StreamsMembershipManager implements RequestManager {
                 "already leaving the group.", memberId, memberEpoch);
             return;
         }
-        if (state == MemberState.UNSUBSCRIBED && maybeCompleteLeaveInProgress()) {
+        if (state == MemberState.UNSUBSCRIBED && responseData.memberEpoch() < 0 && maybeCompleteLeaveInProgress()) {
             log.debug("Member {} with epoch {} received a successful response to the heartbeat " +
                 "to leave the group and completed the leave operation. ", memberId, memberEpoch);
             return;
@@ -669,6 +671,13 @@ public class StreamsMembershipManager implements RequestManager {
         if (isNotInGroup()) {
             log.debug("Ignoring heartbeat response received from broker. Member {} is in {} state" +
                 " so it's not a member of the group. ", memberId, state);
+            return;
+        }
+        if (responseData.memberEpoch() < 0) {
+            log.debug("Ignoring heartbeat response received from broker. Member {} with epoch {} " +
+                "is in {} state and the member epoch is invalid: {}. ", memberId, memberEpoch, state,
+                responseData.memberEpoch());
+            maybeCompleteLeaveInProgress();
             return;
         }
         
@@ -1001,8 +1010,8 @@ public class StreamsMembershipManager implements RequestManager {
             return;
         }
         if (reconciliationInProgress) {
-            log.trace("Ignoring reconciliation attempt. Another reconciliation is already in progress. Assignment " +
-                targetAssignment + " will be handled in the next reconciliation loop.");
+            log.trace("Ignoring reconciliation attempt. Another reconciliation is already in progress. Assignment {}" +
+                " will be handled in the next reconciliation loop.", targetAssignment);
             return;
         }
 
@@ -1122,12 +1131,12 @@ public class StreamsMembershipManager implements RequestManager {
         );
 
         final SortedSet<TopicPartition> partitionsToAssign = topicPartitionsForActiveTasks(activeTasksToAssign);
-        final SortedSet<TopicPartition> partitionsToAssigneNotPreviouslyOwned =
+        final SortedSet<TopicPartition> partitionsToAssignNotPreviouslyOwned =
             partitionsToAssignNotPreviouslyOwned(partitionsToAssign, topicPartitionsForActiveTasks(ownedActiveTasks));
 
         subscriptionState.assignFromSubscribedAwaitingCallback(
             partitionsToAssign,
-            partitionsToAssigneNotPreviouslyOwned
+            partitionsToAssignNotPreviouslyOwned
         );
         notifyAssignmentChange(partitionsToAssign);
 
@@ -1143,10 +1152,10 @@ public class StreamsMembershipManager implements RequestManager {
             if (callbackError == null) {
                 subscriptionState.enablePartitionsAwaitingCallback(partitionsToAssign);
             } else {
-                if (!partitionsToAssigneNotPreviouslyOwned.isEmpty()) {
+                if (!partitionsToAssignNotPreviouslyOwned.isEmpty()) {
                     log.warn("Leaving newly assigned partitions {} marked as non-fetchable and not " +
                             "requiring initializing positions after onTasksAssigned callback failed.",
-                        partitionsToAssigneNotPreviouslyOwned, callbackError);
+                        partitionsToAssignNotPreviouslyOwned, callbackError);
                 }
             }
         });
@@ -1196,9 +1205,9 @@ public class StreamsMembershipManager implements RequestManager {
             Stream.concat(
                 streamsRebalanceData.subtopologies().get(task.subtopologyId()).sourceTopics().stream(),
                 streamsRebalanceData.subtopologies().get(task.subtopologyId()).repartitionSourceTopics().keySet().stream()
-            ).forEach(topic -> {
-                topicPartitions.add(new TopicPartition(topic, task.partitionId()));
-            })
+            ).forEach(topic ->
+                topicPartitions.add(new TopicPartition(topic, task.partitionId()))
+            )
         );
         return topicPartitions;
     }
@@ -1214,7 +1223,7 @@ public class StreamsMembershipManager implements RequestManager {
             String reason = rejoinedWhileReconciliationInProgress ?
                 "the member has re-joined the group" :
                 "the member already transitioned out of the reconciling state into " + state;
-            log.info("Interrupting reconciliation that is not relevant anymore because " + reason);
+            log.info("Interrupting reconciliation that is not relevant anymore because {}", reason);
             markReconciliationCompleted();
         }
         return shouldAbort;
@@ -1304,5 +1313,10 @@ public class StreamsMembershipManager implements RequestManager {
             log.debug("The onAllTasksLost callback completed successfully; signaling to continue to the next phase of rebalance");
             future.complete(null);
         }
+    }
+
+    // visible for testing
+    List<MemberStateListener> stateListeners() {
+        return unmodifiableList(stateUpdatesListeners);
     }
 }

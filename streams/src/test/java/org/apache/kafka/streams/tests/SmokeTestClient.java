@@ -54,6 +54,7 @@ public class SmokeTestClient extends SmokeTestUtil {
     private KafkaStreams streams;
     private boolean uncaughtException = false;
     private volatile boolean closed;
+    private volatile boolean error;
 
     private static void addShutdownHook(final String name, final Runnable runnable) {
         if (name != null) {
@@ -71,6 +72,10 @@ public class SmokeTestClient extends SmokeTestUtil {
         return closed;
     }
 
+    public boolean error() {
+        return error;
+    }
+
     public void start(final Properties streamsProperties) {
         final Topology build = getTopology();
         streams = new KafkaStreams(build, getStreamsConfig(streamsProperties));
@@ -84,6 +89,10 @@ public class SmokeTestClient extends SmokeTestUtil {
 
             if (newState == KafkaStreams.State.NOT_RUNNING) {
                 closed = true;
+            }
+
+            if (newState == KafkaStreams.State.ERROR) {
+                error = true;
             }
         });
 
@@ -174,7 +183,7 @@ public class SmokeTestClient extends SmokeTestUtil {
 
         final KTable<Windowed<String>, Integer> smallWindowSum = groupedData
             .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofSeconds(2), Duration.ofSeconds(30)).advanceBy(Duration.ofSeconds(1)))
-            .reduce((l, r) -> l + r);
+            .reduce(Integer::sum);
 
         streamify(smallWindowSum, "sws-raw");
         streamify(smallWindowSum.suppress(untilWindowCloses(BufferConfig.unbounded())), "sws-suppressed");

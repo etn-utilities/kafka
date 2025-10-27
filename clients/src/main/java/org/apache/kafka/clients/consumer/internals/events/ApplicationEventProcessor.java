@@ -16,11 +16,11 @@
  */
 package org.apache.kafka.clients.consumer.internals.events;
 
+import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.internals.Acknowledgements;
 import org.apache.kafka.clients.consumer.internals.CachedSupplier;
 import org.apache.kafka.clients.consumer.internals.CommitRequestManager;
-import org.apache.kafka.clients.consumer.internals.ConsumerMetadata;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkThread;
 import org.apache.kafka.clients.consumer.internals.OffsetAndTimestampInternal;
 import org.apache.kafka.clients.consumer.internals.RequestManagers;
@@ -56,14 +56,14 @@ import java.util.stream.Collectors;
 public class ApplicationEventProcessor implements EventProcessor<ApplicationEvent> {
 
     private final Logger log;
-    private final ConsumerMetadata metadata;
+    private final Metadata metadata;
     private final SubscriptionState subscriptions;
     private final RequestManagers requestManagers;
     private int metadataVersionSnapshot;
 
     public ApplicationEventProcessor(final LogContext logContext,
                                      final RequestManagers requestManagers,
-                                     final ConsumerMetadata metadata,
+                                     final Metadata metadata,
                                      final SubscriptionState subscriptions) {
         this.log = logContext.logger(ApplicationEventProcessor.class);
         this.requestManagers = requestManagers;
@@ -310,7 +310,7 @@ public class ApplicationEventProcessor implements EventProcessor<ApplicationEven
             manager.updateTimerAndMaybeCommit(event.currentTimeMs());
         }
 
-        log.info("Assigned to partition(s): {}", event.partitions().stream().map(TopicPartition::toString).collect(Collectors.joining(", ")));
+        log.info("Assigned to partition(s): {}", event.partitions());
         try {
             if (subscriptions.assignFromUser(new HashSet<>(event.partitions())))
                 metadata.requestUpdateForNewTopics();
@@ -497,7 +497,7 @@ public class ApplicationEventProcessor implements EventProcessor<ApplicationEven
             CompletableFuture<Void> future = requestManagers.consumerMembershipManager.get().leaveGroupOnClose(event.membershipOperation());
             future.whenComplete(complete(event.future()));
         } else if (requestManagers.streamsMembershipManager.isPresent()) {
-            log.debug("Signal the StreamsMembershipManager to leave the Streams group since the member is closing");
+            log.debug("Signal the StreamsMembershipManager to leave the streams group since the member is closing");
             CompletableFuture<Void> future = requestManagers.streamsMembershipManager.get().leaveGroupOnClose();
             future.whenComplete(complete(event.future()));
         }
@@ -740,7 +740,7 @@ public class ApplicationEventProcessor implements EventProcessor<ApplicationEven
      * {@link ConsumerNetworkThread}.
      */
     public static Supplier<ApplicationEventProcessor> supplier(final LogContext logContext,
-                                                               final ConsumerMetadata metadata,
+                                                               final Metadata metadata,
                                                                final SubscriptionState subscriptions,
                                                                final Supplier<RequestManagers> requestManagersSupplier) {
         return new CachedSupplier<>() {

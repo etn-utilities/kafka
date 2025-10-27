@@ -26,11 +26,13 @@ import org.apache.kafka.clients.consumer.internals.events.CompletableEventReaper
 import org.apache.kafka.clients.consumer.internals.events.ErrorEvent;
 import org.apache.kafka.clients.consumer.internals.events.PollEvent;
 import org.apache.kafka.clients.consumer.internals.events.ShareAcknowledgeOnCloseEvent;
+import org.apache.kafka.clients.consumer.internals.events.ShareAcknowledgementCommitCallbackEvent;
 import org.apache.kafka.clients.consumer.internals.events.ShareAcknowledgementCommitCallbackRegistrationEvent;
 import org.apache.kafka.clients.consumer.internals.events.ShareFetchEvent;
 import org.apache.kafka.clients.consumer.internals.events.ShareSubscriptionChangeEvent;
 import org.apache.kafka.clients.consumer.internals.events.ShareUnsubscribeEvent;
 import org.apache.kafka.clients.consumer.internals.events.StopFindCoordinatorOnCloseEvent;
+import org.apache.kafka.clients.consumer.internals.metrics.AsyncConsumerMetrics;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
@@ -41,7 +43,9 @@ import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.utils.LogCaptureAppender;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
@@ -50,6 +54,8 @@ import org.apache.kafka.test.MockConsumerInterceptor;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
@@ -72,8 +78,10 @@ import java.util.function.Predicate;
 
 import static java.util.Collections.singleton;
 import static java.util.Collections.singletonList;
+import static org.apache.kafka.clients.consumer.internals.ConsumerUtils.CONSUMER_SHARE_METRIC_GROUP;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -94,7 +102,7 @@ public class ShareConsumerImplTest {
 
     private final Time time = new MockTime(1);
     private final ShareFetchCollector<String, String> fetchCollector = mock(ShareFetchCollector.class);
-    private final ConsumerMetadata metadata = mock(ConsumerMetadata.class);
+    private final ShareConsumerMetadata metadata = mock(ShareConsumerMetadata.class);
     private final ApplicationEventHandler applicationEventHandler = mock(ApplicationEventHandler.class);
     private final LinkedBlockingQueue<BackgroundEvent> backgroundEventQueue = new LinkedBlockingQueue<>();
     private final CompletableEventReaper backgroundEventReaper = mock(CompletableEventReaper.class);
@@ -204,11 +212,20 @@ public class ShareConsumerImplTest {
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "group-id");
         props.put(ConsumerConfig.METRIC_REPORTER_CLASSES_CONFIG, "an.invalid.class");
         final ConsumerConfig config = new ConsumerConfig(props);
-        KafkaException ce = assertThrows(
+
+        try (LogCaptureAppender appender = LogCaptureAppender.createAndRegister()) {
+            KafkaException ce = assertThrows(
                 KafkaException.class,
                 () -> newConsumer(config));
-        assertTrue(ce.getMessage().contains("Failed to construct Kafka share consumer"), "Unexpected exception message: " + ce.getMessage());
-        assertTrue(ce.getCause().getMessage().contains("Class an.invalid.class cannot be found"), "Unexpected cause: " + ce.getCause());
+            assertTrue(ce.getMessage().contains("Failed to construct Kafka share consumer"), "Unexpected exception message: " + ce.getMessage());
+            assertTrue(ce.getCause().getMessage().contains("Class an.invalid.class cannot be found"), "Unexpected cause: " + ce.getCause());
+
+            boolean npeLogged = appender.getEvents().stream()
+                .flatMap(event -> event.getThrowableInfo().stream())
+                .anyMatch(str -> str.contains("NullPointerException"));
+
+            assertFalse(npeLogged, "Unexpected NullPointerException during consumer construction");
+        }
     }
 
     @Test
@@ -672,6 +689,32 @@ public class ShareConsumerImplTest {
         verify(applicationEventHandler).addAndGet(any(ShareAcknowledgeOnCloseEvent.class));
     }
 
+    @ParameterizedTest
+    @EnumSource(value = Errors.class, names = {"TOPIC_AUTHORIZATION_FAILED", "GROUP_AUTHORIZATION_FAILED", "INVALID_TOPIC_EXCEPTION"})
+    public void testCloseWithBackgroundQueueErrorsAfterUnsubscribe(Errors error) {
+        SubscriptionState subscriptions = new SubscriptionState(new LogContext(), AutoOffsetResetStrategy.NONE);
+        consumer = newConsumer(subscriptions);
+
+        // Complete the acknowledge on close event successfully
+        completeShareAcknowledgeOnCloseApplicationEventSuccessfully();
+        
+        // Complete the unsubscribe event successfully
+        completeShareUnsubscribeApplicationEventSuccessfully(subscriptions);
+
+        // Mock the applicationEventHandler to add errors to the queue after unsubscribe
+        doAnswer(invocation -> {
+            // Add errors to the queue after unsubscribe event is processed
+            backgroundEventQueue.add(new ErrorEvent(error.exception()));
+            return null;
+        }).when(applicationEventHandler).add(any(StopFindCoordinatorOnCloseEvent.class));
+
+        // Close should complete successfully despite the errors in the background queue
+        assertDoesNotThrow(() -> consumer.close());
+
+        // Verify that the background queue was processed
+        assertTrue(backgroundEventQueue.isEmpty(), "Background queue should be empty after close");
+    }
+
     private Properties requiredConsumerPropertiesAndGroupId(final String groupId) {
         final Properties props = requiredConsumerProperties();
         props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
@@ -738,6 +781,22 @@ public class ShareConsumerImplTest {
         // Because we didn't need to perform a timed get, we should still have every last millisecond
         // of our initial timeout.
         assertEquals(1000, timer.remainingMs());
+    }
+
+    @Test
+    public void testRecordBackgroundEventQueueSize() {
+        consumer = newConsumer();
+        Metrics metrics = consumer.metricsRegistry();
+        AsyncConsumerMetrics asyncConsumerMetrics = consumer.asyncConsumerMetrics();
+
+        ShareAcknowledgementCommitCallbackEvent event = new ShareAcknowledgementCommitCallbackEvent(Map.of());
+        backgroundEventQueue.add(event);
+        asyncConsumerMetrics.recordBackgroundEventQueueSize(1);
+
+        assertEquals(1, (double) metrics.metric(metrics.metricName("background-event-queue-size", CONSUMER_SHARE_METRIC_GROUP)).metricValue());
+
+        consumer.processBackgroundEvents();
+        assertEquals(0, (double) metrics.metric(metrics.metricName("background-event-queue-size", CONSUMER_SHARE_METRIC_GROUP)).metricValue());
     }
 
     /**

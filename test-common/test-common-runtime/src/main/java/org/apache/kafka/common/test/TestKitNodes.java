@@ -52,7 +52,7 @@ public class TestKitNodes {
         private int numControllerNodes;
         private int numBrokerNodes;
         private int numDisksPerBroker = 1;
-        private Map<Integer, Map<String, String>> perServerProperties = Collections.emptyMap();
+        private Map<Integer, Map<String, String>> perServerProperties = Map.of();
         private BootstrapMetadata bootstrapMetadata;
 
         public Builder() {
@@ -90,11 +90,6 @@ public class TestKitNodes {
 
         public Builder setBootstrapMetadata(BootstrapMetadata bootstrapMetadata) {
             this.bootstrapMetadata = bootstrapMetadata;
-            return this;
-        }
-
-        public Builder setFeature(String featureName, short level) {
-            this.bootstrapMetadata = bootstrapMetadata.copyWithFeatureRecord(featureName, level);
             return this;
         }
 
@@ -201,7 +196,7 @@ public class TestKitNodes {
                     baseDirectory.toFile().getAbsolutePath(),
                     clusterId,
                     brokerNodeIds.contains(id),
-                    perServerProperties.getOrDefault(id, Collections.emptyMap())
+                    perServerProperties.getOrDefault(id, Map.of())
                 );
                 controllerNodes.put(id, controllerNode);
             }
@@ -213,7 +208,7 @@ public class TestKitNodes {
                     baseDirectory.toFile().getAbsolutePath(),
                     clusterId,
                     controllerNodeIds.contains(id),
-                    perServerProperties.getOrDefault(id, Collections.emptyMap()),
+                    perServerProperties.getOrDefault(id, Map.of()),
                     numDisksPerBroker
                 );
                 brokerNodes.put(id, brokerNode);
