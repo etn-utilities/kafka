@@ -4,9 +4,6 @@ org.apache.kafka.connect.cli.ConnectStandaloneTest:
 - testParseJsonFileWithCreateConnectorRequest
 - testParseJsonFileWithCreateConnectorRequestWithUnknownField
 - testParseJsonFileWithCreateConnectorRequestWithoutInitialState
-org.apache.kafka.connect.connector.policy.AllowlistConnectorClientConfigOverridePolicyTest:
-- testAllowConfigs
-- testDenyAllByDefault
 org.apache.kafka.connect.connector.policy.NoneConnectorClientConfigOverridePolicyTest:
 - testNoOverrides
 - testWithOverrides
@@ -112,14 +109,11 @@ org.apache.kafka.connect.integration.ConnectWorkerIntegrationTest:
 - testTasksMaxEnforcement
 org.apache.kafka.connect.integration.ConnectorClientPolicyIntegrationTest:
 - testCreateWithAllowedOverridesForAllPolicy
-- testCreateWithAllowedOverridesForAllowlistPolicy
 - testCreateWithAllowedOverridesForDefaultPolicy
 - testCreateWithAllowedOverridesForPrincipalPolicy
 - testCreateWithNoAllowedOverridesForNonePolicy
-- testCreateWithNotAllowedOverridesForAllowlistPolicy
 - testCreateWithNotAllowedOverridesForPrincipalPolicy
 - testCreateWithOverridesForNonePolicy
-- testCreateWithoutOverridesForAllowlistPolicy
 org.apache.kafka.connect.integration.ConnectorRestartApiIntegrationTest:
 - testFailedConnectorRestartBothConnectorAndTasks
 - testFailedConnectorRestartOnlyConnector
@@ -275,7 +269,6 @@ org.apache.kafka.connect.runtime.AbstractHerderTest:
 - testClientConfigOverridePolicyWithMetrics
 - testConfigProviderRegex
 - testConfigValidationAllOverride
-- testConfigValidationAllowlistOverride
 - testConfigValidationEmptyConfig
 - testConfigValidationInvalidTopics
 - testConfigValidationMissingName
@@ -929,11 +922,7 @@ org.apache.kafka.connect.runtime.isolation.DelegatingClassLoaderTest:
 - testEmptyGetResource
 - testEmptyLoadClass
 - testInitializedConnectorLoader
-- testInitializedConnectorLoaderWithVersion
 - testInitializedLoadClass
-- testInitializedPluginLoader
-- testInitializedPluginLoaderWithClassLoader
-- testInitializedPluginLoaderWithVersion
 org.apache.kafka.connect.runtime.isolation.MultiVersionTest:
 - testBundledPluginLoading
 - testCorrectVersionRange

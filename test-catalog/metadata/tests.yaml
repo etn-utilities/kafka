@@ -127,11 +127,6 @@ org.apache.kafka.controller.FeatureControlManagerTest:
 - testUpdateFeatures
 - testUpdateFeaturesErrorCases
 - testUpgradeElrFeatureLevel
-org.apache.kafka.controller.MockRaftClientTest:
-- testClaimsLeadership
-- testCommits
-- testCreateAndClose
-- testPassLeadership
 org.apache.kafka.controller.OffsetControlManagerTest:
 - testAbortTransactionRecordNotAllowedInSnapshot
 - testActivate
@@ -162,7 +157,6 @@ org.apache.kafka.controller.PartitionChangeBuilderTest:
 - testEligibleLeaderReplicas_IsrShrinkBelowMinISR
 - testEligibleLeaderReplicas_NotEligibleLastKnownLeader
 - testEligibleLeaderReplicas_RemoveUncleanShutdownReplicasFromElr
-- testEligibleLeaderReplicas_lastKnownElrShouldBePopulatedWhenNoLeader
 - testIsrChangeAndLeaderChange
 - testIsrChangeDoesntBumpLeaderEpoch
 - testIsrEnlargementCompletesReassignment
@@ -275,7 +269,6 @@ org.apache.kafka.controller.ReplicationControlManagerTest:
 - testCreateTopicsWithConfigs
 - testCreateTopicsWithMutationQuotaExceeded
 - testCreateTopicsWithPolicy
-- testCreateTopicsWithPolicyUnexpectedException
 - testCreateTopicsWithValidateOnlyFlag
 - testDeleteTopics
 - testDeleteTopicsWithMutationQuotaExceeded
@@ -386,7 +379,6 @@ org.apache.kafka.controller.metrics.ControllerMetricsChangesTest:
 - testTopicChange
 - testTopicElectionResult
 org.apache.kafka.controller.metrics.QuorumControllerMetricsTest:
-- testAvgIdleRatio
 - testLastAppliedRecordMetrics
 - testMetricNames
 - testTimeSinceLastHeartbeatReceivedMs
@@ -450,9 +442,6 @@ org.apache.kafka.image.MetadataImageTest:
 - testImage1RoundTrip
 - testImage2RoundTrip
 org.apache.kafka.image.MetadataVersionChangeTest:
-- testConstructorThrowsExceptionWhenBothVersionsAreNull
-- testConstructorThrowsExceptionWhenNewVersionIsNull
-- testConstructorThrowsExceptionWhenOldVersionIsNull
 - testIsDowngrade
 - testIsUpgrade
 - testMetadataVersionChangeExceptionToString
@@ -485,7 +474,6 @@ org.apache.kafka.image.TopicsImageTest:
 - testTopicDeltaElectionStatsWithNonEmptyImage
 - testTopicIdToNameView
 - testTopicNameToIdView
-- testTopicsDeltaCreateThenDelete
 - testUpdatedLeaders
 org.apache.kafka.image.loader.MetadataBatchLoaderTest:
 - testAlignedTransactionBatches
@@ -501,7 +489,6 @@ org.apache.kafka.image.loader.MetadataLoaderTest:
 - testCatchingUpState
 - testCreateAndClose
 - testInstallPublishers
-- testKRaftVersionFinalizedLevelMetric
 - testLastAppliedOffset
 - testLoadEmptyBatch
 - testLoadEmptySnapshot
@@ -513,7 +500,6 @@ org.apache.kafka.image.loader.MetadataLoaderTest:
 - testRemovePublisher
 - testSnapshotDuringTransaction
 org.apache.kafka.image.loader.metrics.MetadataLoaderMetricsTest:
-- testFinalizedFeatureLevelMetrics
 - testInitialValueOfCurrentControllerId
 - testManagedMetrics
 - testMetricNames
@@ -714,10 +700,6 @@ org.apache.kafka.metadata.MetadataRecordSerdeTest:
 - testParsingUnsupportedApiKey
 - testParsingVersionTooLarge
 - testSerde
-org.apache.kafka.metadata.MetadataVersionConfigValidatorTest:
-- testInvokesFaultHandlerOnException
-- testValidateWithMetadataVersionJbodSupport
-- testValidatesConfigOnMetadataChange
 org.apache.kafka.metadata.MockConfigRepositoryTest:
 - testEmptyRepository
 - testSetTopicConfig
@@ -740,6 +722,7 @@ org.apache.kafka.metadata.PartitionRegistrationTest:
 - testPartitionRegistrationToRecord
 - testPartitionRegistrationToRecord_ElrShouldBeNullIfEmpty
 - testRecordRoundTrip
+- testToLeaderAndIsrPartitionState
 org.apache.kafka.metadata.ReplicasTest:
 - testClone
 - testContains
@@ -908,15 +891,16 @@ org.apache.kafka.metadata.storage.FormatterTest:
 - testFormatElrEnabledWithMetadataVersions
 - testFormatWithInitialVoters
 - testFormatWithInitialVotersFailsWithOlderKraftVersion
-- testFormatWithInitialVotersWithOlderMetadataVersion
+- testFormatWithInitialVotersFailsWithOlderMetadataVersion
 - testFormatWithNoInitialControllers
-- testFormatWithNoInitialControllersWithOlderMetadataVersion
+- testFormatWithNoInitialControllersFailsWithOlderKraftVersion
 - testFormatWithOlderReleaseVersion
 - testFormatWithScram
 - testFormatWithScramFailsOnUnsupportedReleaseVersions
-- testFormatWithStaticQuorumFailsWithNewerKraftVersion
 - testFormatWithUnstableReleaseVersion
 - testFormatWithUnstableReleaseVersionFailsWithoutEnableUnstable
+- testFormatWithoutInitialVotersFailsWithNewerKraftVersion
+- testFormatWithoutNoInitialControllersFailsWithNewerKraftVersion
 - testFormatterFailsOnAlreadyFormatted
 - testFormatterFailsOnUnwritableDirectory
 - testFormattingCreatesLogDirId
@@ -958,3 +942,8 @@ org.apache.kafka.metadata.util.RecordRedactorTest:
 - testTopicRecordToString
 - testUserScramCredentialRecordToString
 - testUserScramCredentialRecordToStringWithNullName
+org.apache.kafka.metalog.LocalLogManagerTest:
+- testClaimsLeadership
+- testCommits
+- testCreateAndClose
+- testPassLeadership

@@ -72,11 +72,6 @@ org.apache.kafka.server.BrokerFeaturesTest:
 - testEmpty
 - testIncompatibilitiesDueToAbsentFeature
 - testIncompatibilitiesDueToIncompatibleFeature
-org.apache.kafka.server.BrokerRegistrationRequestTest:
-- shouldRegisterWhenSupportedRangeAndNotMigrating
-- shouldRejectRegistrationWhenFeatureLevelTooHigh
-- shouldRejectRegistrationWithoutFeatureLevels
-- shouldRejectZkMigratingBrokerWhenFeatureLevelDoesNotSupportMigration
 org.apache.kafka.server.ClientMetricsManagerTest:
 - testCacheEviction
 - testCacheEvictionWithMultipleClients
@@ -114,25 +109,11 @@ org.apache.kafka.server.ClientMetricsManagerTest:
 - testUpdateSubscriptionWithInvalidMetricsProperties
 - testUpdateSubscriptionWithNullProperties
 - testUpdateSubscriptionWithPropertiesDeletion
-org.apache.kafka.server.EligibleLeaderReplicasIntegrationTest:
-- testElrMemberCanBeElected
-- testElrMemberShouldBeKickOutWhenUncleanShutdown
-- testHighWatermarkShouldNotAdvanceIfUnderMinIsr
-- testLastKnownLeaderShouldBeElectedIfEmptyElr
 org.apache.kafka.server.LogManagerIntegrationTest:
 - testIOExceptionOnLogSegmentCloseResultsInRecovery
 - testRestartBrokerNoErrorIfMissingPartitionMetadata
 org.apache.kafka.server.MonitorablePluginsIntegrationTest:
 - testMonitorableServerPlugins
-org.apache.kafka.server.ReconfigurableQuorumIntegrationTest:
-- testControllersAutoJoinStandaloneVoter
-- testCreateAndDestroyNonReconfigurableCluster
-- testCreateAndDestroyReconfigurableCluster
-- testNewVoterAutoRemovesAndAdds
-- testRemoveAndAddSameController
-- testRemoveAndAddVoterWithInconsistentClusterId
-- testRemoveAndAddVoterWithValidClusterId
-- testRemoveController
 org.apache.kafka.server.config.DelegationTokenManagerConfigsTest:
 - testDefaults
 - testInvalidProperty
@@ -171,30 +152,8 @@ org.apache.kafka.server.metrics.ForwardingManagerMetricsTest:
 org.apache.kafka.server.metrics.LinuxIoMetricsCollectorTest:
 - testReadProcFile
 - testUnableToReadNonexistentProcFile
-org.apache.kafka.server.metrics.NodeMetricsTest:
-- testMetricsExported
 org.apache.kafka.server.purgatory.DelayedFutureTest:
 - testDelayedFuture
-org.apache.kafka.server.quota.ClientQuotasRequestTest:
-- testAlterClientQuotasBadIp
-- testAlterClientQuotasInvalidEntityCombination
-- testAlterClientQuotasInvalidRequests
-- testAlterClientQuotasRequest
-- testAlterClientQuotasRequestValidateOnly
-- testAlterIpQuotasRequest
-- testClientQuotasForScramUsers
-- testClientQuotasSanitized
-- testClientQuotasUnsupportedEntityTypes
-- testDescribeClientQuotasInvalidFilterCombination
-- testDescribeClientQuotasMatchExact
-- testDescribeClientQuotasMatchPartial
-org.apache.kafka.server.quota.ClientSensorsTest:
-- testConstructorPreservesInputOrder
-- testConstructorThrowsExceptionWhenBothSensorsAreNull
-- testConstructorThrowsExceptionWhenQuotaSensorIsNull
-- testConstructorThrowsExceptionWhenThrottleTimeSensorIsNull
-- testConstructorWithEmptyMap
-- testConstructorWithValidParameters
 org.apache.kafka.server.quota.ThrottledChannelTest:
 - testThrottledChannelDelay
 org.apache.kafka.server.replica.ReplicaTest:
@@ -219,9 +178,6 @@ org.apache.kafka.server.share.fetch.PartitionRotateStrategyTest:
 - testRoundRobinStrategy
 - testRoundRobinStrategyWithEmptyPartitions
 - testRoundRobinStrategyWithSpecialSessionEpochs
-org.apache.kafka.server.share.fetch.RecordStateTest:
-- testRecordStateForId
-- testRecordStateValidateTransition
 org.apache.kafka.server.share.fetch.ShareFetchTest:
 - testDontCacheAnyData
 - testErrorInAllPartitions
@@ -240,19 +196,9 @@ org.apache.kafka.server.share.session.ShareSessionCacheTest:
 - testShareGroupListenerEvents
 - testShareGroupListenerEventsMultipleGroups
 - testShareSessionCache
-org.apache.kafka.server.share.session.ShareSessionKeyTest:
-- testConstructorThrowsExceptionWhenBothGroupIdAndMemberIdIsNull
-- testConstructorThrowsExceptionWhenGroupIdIsNull
-- testConstructorThrowsExceptionWhenMemberIdIsNull
 org.apache.kafka.server.share.session.ShareSessionTest:
 - testPartitionsToLogString
 - testPartitionsToLogStringEmpty
-org.apache.kafka.server.transaction.AddPartitionsToTxnManagerTest:
-- testAddPartitionsToTxnHandlerErrorHandling
-- testAddPartitionsToTxnManagerMetrics
-- testAddTxnData
-- testGenerateRequests
-- testTransactionCoordinatorResolution
 org.apache.kafka.server.util.SchedulerTest:
 - testMockSchedulerLocking
 - testMockSchedulerNonPeriodicTask

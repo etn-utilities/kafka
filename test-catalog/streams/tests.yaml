@@ -11,12 +11,10 @@ org.apache.kafka.streams.KafkaStreamsTest:
 - shouldAllowCleanupBeforeStartAndAfterClose
 - shouldCleanupOldStateDirs
 - shouldCleanupResourcesOnCloseWithoutPreviousStart
-- shouldCloseStartupTasksAfterFirstRebalance
 - shouldCountDownTimeoutAcrossClient
 - shouldGetClientSupplierFromConfigForConstructor
 - shouldGetClientSupplierFromConfigForConstructorWithTime
 - shouldGetQueryMetadataWithSerializerWhenRunningOrRebalancing
-- shouldInitializeTasksForLocalStateOnStart
 - shouldLogWarningIfNonDefaultClientSupplierUsedWithStreamsProtocol
 - shouldNotAddThreadWhenClosed
 - shouldNotAddThreadWhenCreated
@@ -66,7 +64,6 @@ org.apache.kafka.streams.KafkaStreamsTest:
 - shouldThrowUnknownStateStoreExceptionWhenStoreNotExist
 - shouldTransitToRunningWithGlobalOnlyTopology
 - shouldTriggerRecordingOfRocksDBMetricsIfRecordingLevelIsDebug
-- shouldUseDefaultTimeoutForCloseWithNullTimeout
 - shouldUseProvidedClientSupplier
 - stateShouldTransitToRunningIfNonDeadThreadsBackToRunning
 - statefulTopologyShouldCreateStateDirectory
@@ -298,6 +295,7 @@ org.apache.kafka.streams.StreamsConfigTest:
 - shouldSetGroupProtocolToClassic
 - shouldSetGroupProtocolToClassicByDefault
 - shouldSetGroupProtocolToStreams
+- shouldSetInternalLeaveGroupOnCloseConfigToFalseInConsumer
 - shouldSetMinTrafficRackAwareAssignmentConfig
 - shouldSetRackAwareAssignmentTags
 - shouldSpecifyCorrectKeySerdeClassOnError
@@ -487,9 +485,6 @@ org.apache.kafka.streams.TopologyTest:
 - timeWindowedCogroupedZeroArgCountWithTopologyConfigShouldPreserveTopologyStructure
 - topologyWithDynamicRoutingShouldDescribeExtractorClass
 - topologyWithStaticTopicNameExtractorShouldRespectEqualHashcodeContract
-org.apache.kafka.streams.errors.ExceptionHandlerUtilsTest:
-- checkDeadLetterQueueRecords
-- doNotBuildDeadLetterQueueRecordsIfNotConfigured
 org.apache.kafka.streams.internals.ApiUtilsTest:
 - shouldContainsNameAndValueInFailMsgPrefix
 - shouldReturnMillisecondsOnValidDuration
@@ -508,8 +503,6 @@ org.apache.kafka.streams.internals.metrics.ClientMetricsTest:
 - shouldAddTopologyDescriptionMetric
 - shouldAddVersionMetric
 - shouldGetFailedStreamThreadsSensor
-org.apache.kafka.streams.internals.metrics.OpenIteratorsTest:
-- shouldCalculateOldestStartTimestampCorrectly
 org.apache.kafka.streams.internals.metrics.StreamsClientMetricsDelegatingReporterTest:
 - metricRemoval
 - shouldInitMetrics
@@ -1635,10 +1628,9 @@ org.apache.kafka.streams.kstream.internals.graph.StreamsGraphTest:
 - shouldBeAbleToBuildTopologyIncrementally
 - shouldBeAbleToProcessNestedMultipleKeyChangingNodes
 - shouldNotOptimizeWhenRepartitionOperationIsDone
-- shouldNotOptimizeWithValueOrKeyChangingOperatorsAfterInitialKeyChangeWithFixEnabled
+- shouldNotOptimizeWithValueOrKeyChangingOperatorsAfterInitialKeyChange
 - shouldNotThrowNPEWithMergeNodes
 - shouldOptimizeSeveralMergeNodesWithCommonKeyChangingParent
-- shouldPartiallyOptimizeWithValueOrKeyChangingOperatorsAfterInitialKeyChangeWithFixDisabled
 org.apache.kafka.streams.kstream.internals.graph.TableSourceNodeTest:
 - shouldConnectStateStoreToChangelogTopic
 - shouldConnectStateStoreToInputTopicIfInputTopicIsUsedAsChangelog
@@ -1815,16 +1807,10 @@ org.apache.kafka.streams.processor.internals.DefaultStateUpdaterTest:
 - shouldUpdateStandbyTaskAfterAllActiveStatefulTasksRemoved
 org.apache.kafka.streams.processor.internals.DefaultStreamsRebalanceListenerTest:
 - testOnAllTasksLost
-- testOnAllTasksLostRecordsMetrics
-- testOnAllTasksLostRecordsMetricsEvenWithException
 - testOnAllTasksLostWithException
 - testOnTasksAssigned
-- testOnTasksAssignedRecordsMetrics
-- testOnTasksAssignedRecordsMetricsEvenWithException
 - testOnTasksAssignedWithException
 - testOnTasksRevoked
-- testOnTasksRevokedRecordsMetrics
-- testOnTasksRevokedRecordsMetricsEvenWithException
 - testOnTasksRevokedWithException
 org.apache.kafka.streams.processor.internals.ForwardingDisabledProcessorContextTest:
 - shouldThrowOnForward
@@ -1924,7 +1910,6 @@ org.apache.kafka.streams.processor.internals.GlobalStreamThreadTest:
 - shouldStopRunningWhenClosedByUser
 - shouldThrowStreamsExceptionOnStartupIfExceptionOccurred
 - shouldThrowStreamsExceptionOnStartupIfThereIsAStreamsException
-- shouldThrowStreamsExceptionOnStartupIfThrowableOccurred
 - shouldTimeOutOnGlobalConsumerInstanceId
 - shouldTransitionToRunningOnStart
 org.apache.kafka.streams.processor.internals.HighAvailabilityStreamsPartitionAssignorTest:
@@ -2204,16 +2189,8 @@ org.apache.kafka.streams.processor.internals.ProcessorMetadataTest:
 - shouldUpdate
 - shouldUpdateCommitFlag
 org.apache.kafka.streams.processor.internals.ProcessorNodeTest:
-- shouldBuildDeadLetterQueueRecordsInDefaultProcessingExceptionHandler
-- shouldBuildDeadLetterQueueRecordsInLogAndContinueProcessingExceptionHandler
-- shouldFailWithDeadLetterQueueRecords
-- shouldFailWithoutDeadLetterQueueRecords
-- shouldNotBeModifiable
 - shouldNotHandleInternalExceptionsThrownDuringProcessing
 - shouldNotThrowFailedProcessingExceptionWhenProcessingExceptionHandlerRepliesWithContinue
-- shouldResumeWithDeadLetterQueueRecords
-- shouldResumeWithoutDeadLetterQueueRecords
-- shouldReturnsEmptyList
 - shouldThrowFailedProcessingExceptionWhenProcessingExceptionHandlerRepliesWithFail
 - shouldThrowFailedProcessingExceptionWhenProcessingExceptionHandlerThrowsAnException
 - shouldThrowStreamsExceptionIfExceptionCaughtDuringClose
@@ -2349,16 +2326,10 @@ org.apache.kafka.streams.processor.internals.ReadOnlyTaskTest:
 org.apache.kafka.streams.processor.internals.RecordCollectorTest:
 - shouldAbortTxOnCloseDirtyIfEosEnabled
 - shouldBroadcastToAllPartitions
-- shouldBuildDeadLetterQueueRecordsInDefaultExceptionHandler
-- shouldBuildDeadLetterQueueRecordsInDefaultExceptionHandlerDuringDeserialization
-- shouldCallOldImplementationExceptionHandler
-- shouldCallOldImplementationWithRecordContextExceptionHandler
 - shouldClearOffsetsOnCloseClean
 - shouldClearOffsetsOnCloseDirty
 - shouldDropAllRecords
 - shouldDropRecordExceptionUsingAlwaysContinueExceptionHandler
-- shouldFailWithDeadLetterQueueRecords
-- shouldFailWithoutDeadLetterQueueRecords
 - shouldForwardFlushToStreamsProducer
 - shouldForwardFlushToStreamsProducerEosEnabled
 - shouldForwardRuntimeExceptionFromStreamPartitionerWithoutWrappingIt
@@ -2367,7 +2338,6 @@ org.apache.kafka.streams.processor.internals.RecordCollectorTest:
 - shouldHaveRawDataDuringExceptionInSerialization
 - shouldNotAbortTxOnCloseCleanIfEosEnabled
 - shouldNotAbortTxnOnEOSCloseDirtyIfNothingSent
-- shouldNotBeModifiable
 - shouldNotCallProductionExceptionHandlerOnClassCastException
 - shouldNotCloseInternalProducerForEOS
 - shouldNotCloseInternalProducerForNonEOS
@@ -2380,10 +2350,6 @@ org.apache.kafka.streams.processor.internals.RecordCollectorTest:
 - shouldNotThrowTaskCorruptedExceptionOnUnknownTopicOrPartitionExceptionUsingAlwaysContinueExceptionHandler
 - shouldPassThroughRecordHeaderToSerializer
 - shouldRecordRecordsAndBytesProduced
-- shouldResumeWithDeadLetterQueueRecords
-- shouldResumeWithoutDeadLetterQueueRecords
-- shouldRetryWithoutDeadLetterQueueRecords
-- shouldReturnsEmptyList
 - shouldSendOnlyToEvenPartitions
 - shouldSendToSpecificPartition
 - shouldSendWithNoPartition
@@ -2425,18 +2391,10 @@ org.apache.kafka.streams.processor.internals.RecordCollectorTest:
 - shouldUseDefaultPartitionerAsStreamPartitionerIsNull
 - shouldUseDefaultPartitionerViaPartitions
 org.apache.kafka.streams.processor.internals.RecordDeserializerTest:
-- shouldBuildDeadLetterQueueRecordsInDefaultDeserializationException
-- shouldBuildDeadLetterQueueRecordsInLogAndContinueDeserializationException
 - shouldFailWhenDeserializationFailsAndExceptionHandlerReturnsNull
 - shouldFailWhenDeserializationFailsAndExceptionHandlerThrows
-- shouldFailWithDeadLetterQueueRecords
-- shouldFailWithoutDeadLetterQueueRecords
-- shouldNotBeModifiable
 - shouldNotThrowStreamsExceptionWhenDeserializationFailsAndExceptionHandlerRepliesWithContinue
-- shouldResumeWithDeadLetterQueueRecords
-- shouldResumeWithoutDeadLetterQueueRecords
 - shouldReturnConsumerRecordWithDeserializedValueWhenNoExceptions
-- shouldReturnsEmptyList
 - shouldThrowStreamsExceptionWhenDeserializationFailsAndExceptionHandlerRepliesWithFail
 org.apache.kafka.streams.processor.internals.RecordQueueTest:
 - shouldDropOnNegativeTimestamp
@@ -2451,7 +2409,6 @@ org.apache.kafka.streams.processor.internals.RecordQueueTest:
 - testConsumedSensor
 - testTimeTracking
 org.apache.kafka.streams.processor.internals.RepartitionOptimizingTest:
-- shouldNotPushRepartitionAcrossValueChangingOperation
 - shouldSendCorrectRecords_OPTIMIZED
 - shouldSendCorrectResults_NO_OPTIMIZATION
 org.apache.kafka.streams.processor.internals.RepartitionTopicConfigTest:
@@ -2514,7 +2471,6 @@ org.apache.kafka.streams.processor.internals.StateConsumerTest:
 - shouldUpdateStateWithReceivedRecordsForPartition
 - shouldWipeStoreOnClose
 org.apache.kafka.streams.processor.internals.StateDirectoryTest:
-- shouldAssignStartupTaskToStreamThread
 - shouldBeAbleToUnlockEvenWithoutLocking
 - shouldBeTrueIfAlreadyHoldsLock
 - shouldCleanUpTaskStateDirectoriesThatAreNotCurrentlyLocked
@@ -2522,7 +2478,6 @@ org.apache.kafka.streams.processor.internals.StateDirectoryTest:
 - shouldCleanupObsoleteTaskDirectoriesAndDeleteTheDirectoryItself
 - shouldCleanupObsoleteTaskDirectoriesInNamedTopologiesAndDeleteTheParentDirectories
 - shouldCleanupStateDirectoriesWhenLastModifiedIsLessThanNowMinusCleanupDelay
-- shouldCloseStartupTasksOnDirectoryClose
 - shouldCreateBaseDirectory
 - shouldCreateDirectoriesIfParentDoesntExist
 - shouldCreateTaskDirectoriesUnderNamedTopologyDirs
@@ -2531,21 +2486,16 @@ org.apache.kafka.streams.processor.internals.StateDirectoryTest:
 - shouldGetFreshProcessIdIfJsonUnreadable
 - shouldGetFreshProcessIdIfProcessFileDeleted
 - shouldHaveSecurePermissions
-- shouldHaveSecurePermissionsIfGroupWriteAccessAllowed
-- shouldInitializeStandbyTasksForLocalState
 - shouldLockMultipleTaskDirectories
 - shouldLockTaskStateDirectoryWhenDirectoryCreationDisabled
 - shouldLogManualUserCallMessage
 - shouldLogStateDirCleanerMessage
 - shouldLogTempDirMessage
-- shouldNotAssignStartupTasksWeDontHave
-- shouldNotCloseStartupTasksOnAutoCleanUp
 - shouldNotCreateBaseDirectory
 - shouldNotCreateGlobalStateDirectory
 - shouldNotCreateTaskStateDirectory
 - shouldNotDeleteAppDirWhenCleanUpIfNotEmpty
 - shouldNotFailWhenCreatingTaskDirectoryInParallel
-- shouldNotInitializeStandbyTasksWhenNoLocalState
 - shouldNotLockStateDirLockedByAnotherThread
 - shouldNotRemoveDirsThatDoNotMatchNamedTopologyDirsWhenCallingClean
 - shouldNotRemoveNonTaskDirectoriesAndFiles
@@ -2568,8 +2518,6 @@ org.apache.kafka.streams.processor.internals.StateDirectoryTest:
 - shouldThrowProcessorStateException
 - shouldThrowProcessorStateExceptionIfStateDirOccupied
 - shouldThrowProcessorStateExceptionIfTestDirOccupied
-- shouldUnlockStartupTasksOnClose
-- shouldUpdateSecurePermissions
 org.apache.kafka.streams.processor.internals.StateManagerUtilTest:
 - shouldNotCloseStateManagerIfUnableToLockTaskDirectory
 - shouldNotWipeStateStoresIfUnableToLockTaskDirectory
@@ -2589,10 +2537,8 @@ org.apache.kafka.streams.processor.internals.StateRestoreCallbackAdapterTest:
 - shouldThrowOnRestore
 - shouldThrowOnRestoreAll
 org.apache.kafka.streams.processor.internals.StoreChangelogReaderTest:
-- shouldCallRecordRestoreTimeAtTheEndOfRestore
 - shouldCheckCompletionIfPositionLargerThanEndOffset
 - shouldInitializeChangelogAndCheckForCompletion
-- shouldNotCallRecordRestoreTimeIfRestoreDoesNotComplete
 - shouldNotRegisterSameStoreMultipleTimes
 - shouldNotRegisterStoreWithoutMetadata
 - shouldNotThrowOnUnknownRevokedPartition
@@ -2721,7 +2667,6 @@ org.apache.kafka.streams.processor.internals.StreamTaskTest:
 - shouldWrapKafkaExceptionsWithStreamsExceptionAndAddContextWhenPunctuatingWallClockTimeTime
 - testMetrics
 org.apache.kafka.streams.processor.internals.StreamThreadTest:
-- shouldAlsoPurgeBeforeTheCommitInterval
 - shouldAlsoPurgeWhenNothingGetsCommitted
 - shouldAlwaysUpdateTasksMetadataAfterChangingState
 - shouldCatchHandleCorruptionOnTaskCorruptedExceptionPath
@@ -2798,12 +2743,8 @@ org.apache.kafka.streams.processor.internals.StreamThreadTest:
 - shouldUpdateStandbyTask
 - testGetTopicPartitionInfo
 - testNamedTopologyWithStreamsProtocol
-- testStreamsProtocolIncorrectlyPartitionedTopics
-- testStreamsProtocolMissingSourceTopicRecovery
 - testStreamsProtocolRunOnceWithProcessingThreads
-- testStreamsProtocolRunOnceWithProcessingThreadsMissingSourceTopic
 - testStreamsProtocolRunOnceWithoutProcessingThreads
-- testStreamsProtocolRunOnceWithoutProcessingThreadsMissingSourceTopic
 - testStreamsRebalanceDataWithClassicProtocol
 - testStreamsRebalanceDataWithExtraCopartition
 - testStreamsRebalanceDataWithStreamsProtocol
@@ -2881,6 +2822,7 @@ org.apache.kafka.streams.processor.internals.StreamsPartitionAssignorTest:
 - shouldThrowIllegalStateExceptionIfAnyTopicsMissingFromChangelogEndOffsets
 - shouldThrowKafkaExceptionIfReferenceContainerConfigIsNotTaskManagerInstance
 - shouldThrowKafkaExceptionIfReferenceContainerNotConfigured
+- shouldThrowOnEagerSubscription
 - shouldThrowTaskAssignmentExceptionWhenUnableToResolvePartitionCount
 - shouldThrowTimeoutExceptionWhenCreatingChangelogTopicsTimesOut
 - shouldThrowTimeoutExceptionWhenCreatingRepartitionTopicsTimesOut
@@ -3012,12 +2954,14 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldAddNewActiveTasks
 - shouldAddNonResumedSuspendedTasks
 - shouldAddRecycledStandbyTasksFromActiveToPendingTasksToInitWithStateUpdaterEnabled
+- shouldAddRecycledStandbyTasksFromActiveToTaskRegistryWithStateUpdaterDisabled
 - shouldAddSubscribedTopicsFromAssignmentToTopologyMetadata
 - shouldAddTasksToStateUpdater
 - shouldAssignActiveTaskInTasksRegistryToBeClosedCleanlyWithStateUpdaterEnabled
 - shouldAssignActiveTaskInTasksRegistryToUpdateInputPartitionsWithStateUpdaterEnabled
 - shouldAssignMultipleTasksInStateUpdater
 - shouldAssignMultipleTasksInTasksRegistryWithStateUpdaterEnabled
+- shouldClassifyExistingTasksWithoutStateUpdater
 - shouldCleanAndReviveCorruptedStandbyTasksBeforeCommittingNonCorruptedTasks
 - shouldCloseActiveTasksAndIgnoreExceptionsOnUncleanShutdown
 - shouldCloseActiveTasksAndPropagateExceptionsOnCleanShutdownWithAlos
@@ -3045,10 +2989,9 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldCommitViaConsumerIfEosDisabled
 - shouldCommitViaProducerIfEosV2Enabled
 - shouldComputeOffsetSumForNonRunningActiveTask
-- shouldComputeOffsetSumForRestoringActiveTask
-- shouldComputeOffsetSumForRestoringStandbyTask
-- shouldComputeOffsetSumForRunningStatefulTask
-- shouldComputeOffsetSumForRunningStatefulTaskAndRestoringTask
+- shouldComputeOffsetSumForRestoringActiveTaskWithStateUpdater
+- shouldComputeOffsetSumForRestoringStandbyTaskWithStateUpdater
+- shouldComputeOffsetSumForRunningStatefulTaskAndRestoringTaskWithStateUpdater
 - shouldComputeOffsetSumForStandbyTask
 - shouldComputeOffsetSumForUnassignedTaskWeCanLock
 - shouldComputeOffsetSumFromCheckpointFileForClosedTask
@@ -3083,7 +3026,9 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldNotCommitCreatedTasksOnRevocationOrClosure
 - shouldNotCommitIfNoRevokedTasksNeedCommitting
 - shouldNotCommitIfNoRevokedTasksNeedCommittingWithEOSv2
-- shouldNotCommitNonCorruptedRestoringActiveTasksAndNotCommitRunningStandbyTasks
+- shouldNotCommitNonCorruptedRestoringActiveTasksAndCommitRunningStandbyTasksWithStateUpdaterDisabled
+- shouldNotCommitNonCorruptedRestoringActiveTasksAndNotCommitRunningStandbyTasksWithStateUpdaterEnabled
+- shouldNotCommitNonRunningNonCorruptedTasks
 - shouldNotCommitOffsetsIfOnlyStandbyTasksAssigned
 - shouldNotCommitOnHandleAssignmentIfNoTaskClosed
 - shouldNotCommitOnHandleAssignmentIfOnlyStandbyTaskClosed
@@ -3092,16 +3037,17 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldNotFailForTimeoutExceptionOnConsumerCommit
 - shouldNotFailOnTimeoutException
 - shouldNotLockAnythingIfStateDirIsEmpty
-- shouldNotPauseReadyTasksOnRebalanceComplete
+- shouldNotPauseReadyTasksWithStateUpdaterOnRebalanceComplete
 - shouldNotReportOffsetSumsAndReleaseLockForUnassignedTaskWithoutCheckpoint
 - shouldNotReportOffsetSumsForTaskWeCantLock
 - shouldNotReturnStateUpdaterTasksInOwnedTasks
 - shouldNotRevokeStandbyTaskInStateUpdaterOnRevocation
 - shouldNotSendPurgeDataIfPreviousNotDone
 - shouldNotSuspendActiveTaskWithoutRevokedInputPartitionsInStateUpdater
+- shouldNotUpdateExistingStandbyTaskIfStandbyIsReassignedWithSameInputPartitionWithoutStateUpdater
 - shouldOnlyCommitRevokedStandbyTaskAndPropagatePrepareCommitException
 - shouldPassUpIfExceptionDuringSuspend
-- shouldPauseAllTopicsOnRebalanceComplete
+- shouldPauseAllTopicsWithoutStateUpdaterOnRebalanceComplete
 - shouldPinOffsetSumToLongMaxValueInCaseOfOverflow
 - shouldProcessActiveTasks
 - shouldPropagateExceptionFromActiveCommit
@@ -3114,12 +3060,13 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldReInitializeStreamsProducerOnHandleLostAllIfEosV2Enabled
 - shouldRecycleActiveTaskInStateUpdater
 - shouldRecycleStandbyTaskInStateUpdater
-- shouldRecycleStartupTasksFromStateDirectoryAsActive
 - shouldReleaseLockForUnassignedTasksAfterRebalance
+- shouldReleaseLockForUnassignedTasksAfterRebalanceWithStateUpdater
 - shouldRemoveUnusedActiveTaskFromStateUpdaterAndCloseCleanly
 - shouldRemoveUnusedFailedActiveTaskFromStateUpdaterAndCloseDirty
 - shouldRemoveUnusedFailedStandbyTaskFromStateUpdaterAndCloseDirty
 - shouldRemoveUnusedStandbyTaskFromStateUpdaterAndCloseCleanly
+- shouldReportLatestOffsetAsOffsetSumForRunningTask
 - shouldResumeActiveRunningTaskInTasksRegistryWithStateUpdaterEnabled
 - shouldResumeActiveSuspendedTaskInTasksRegistryAndAddToStateUpdater
 - shouldResumePollingForPartitionsWithAvailableSpaceForAllActiveTasks
@@ -3142,7 +3089,6 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldShutDownStateUpdaterAndCloseFailedTasksDirty
 - shouldShutdownSchedulingTaskManager
 - shouldSkipUnknownOffsetsWhenComputingOffsetSum
-- shouldStartStateUpdaterOnInit
 - shouldStreamsExceptionOnCommitError
 - shouldSuspendActiveTaskWithRevokedInputPartitionsInStateUpdater
 - shouldSuspendActiveTasksDuringRevocation
@@ -3163,10 +3109,10 @@ org.apache.kafka.streams.processor.internals.TaskManagerTest:
 - shouldTransmitProducerMetrics
 - shouldTryToLockValidTaskDirsAtRebalanceStart
 - shouldUnlockEmptyDirsAtRebalanceStart
+- shouldUpdateExistingStandbyTaskIfStandbyIsReassignedWithDifferentInputPartitionWithoutStateUpdater
 - shouldUpdateInputPartitionOfActiveTaskInStateUpdater
 - shouldUpdateInputPartitionsAfterRebalance
 - shouldUpdateLagForAllActiveTasks
-- shouldUseStartupTasksFromStateDirectoryAsStandby
 - shouldWrapRuntimeExceptionsInProcessActiveTasksAndSetTaskId
 org.apache.kafka.streams.processor.internals.TaskMetadataImplTest:
 - shouldBeEqualsIfOnlyDifferInCommittedOffsets
@@ -3179,7 +3125,6 @@ org.apache.kafka.streams.processor.internals.TaskMetadataImplTest:
 org.apache.kafka.streams.processor.internals.TasksTest:
 - shouldAddFailedTask
 - shouldCheckStateWhenRemoveTask
-- shouldClearAllPendingTasks
 - shouldClearFailedTask
 - shouldDrainPendingTasksToCreate
 - shouldKeepAddedTasks
@@ -3428,10 +3373,8 @@ org.apache.kafka.streams.processor.internals.assignment.LegacyStickyTaskAssignor
 - shouldNotMigrateActiveTaskToOtherProcess
 - shouldNotMoveAnyTasksWhenNewTasksAdded
 - shouldOptimizeStatefulAndStatelessTaskTraffic
-- shouldRangeAssignTasksWhenStartingEmpty
 - shouldReBalanceTasksAcrossAllClientsWhenCapacityAndTaskCountTheSame
 - shouldReBalanceTasksAcrossClientsWhenCapacityLessThanTaskCount
-- shouldReassignTasksWhenNewNodeJoinsWithExistingActiveAndStandbyAssignments
 - shouldRebalanceTasksToClientsBasedOnCapacity
 - shouldRemainOriginalAssignmentWithoutTrafficCostForMinCostStrategy
 - shouldViolateBalanceToPreserveActiveTaskStickiness
@@ -3532,10 +3475,6 @@ org.apache.kafka.streams.processor.internals.metrics.ProcessorNodeMetricsTest:
 - shouldGetIdempotentUpdateSkipSensor
 - shouldGetProcessAtSourceSensor
 - shouldGetSuppressionEmitSensor
-org.apache.kafka.streams.processor.internals.metrics.RebalanceListenerMetricsTest:
-- shouldGetTasksAssignedSensor
-- shouldGetTasksLostSensor
-- shouldGetTasksRevokedSensor
 org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImplTest:
 - shouldAddAmountRate
 - shouldAddAmountRateAndSum
@@ -4560,7 +4499,7 @@ org.apache.kafka.streams.state.internals.MeteredKeyValueStoreTest:
 - shouldPassDefaultChangelogTopicNameToStateStoreSerdeIfLoggingDisabled
 - shouldPutAllToInnerStoreAndRecordPutAllMetric
 - shouldPutIfAbsentAndRecordPutIfAbsentMetric
-- shouldRecordRestoreLatencyOnRecordRestoreTime
+- shouldRecordRestoreLatencyOnInit
 - shouldRemoveMetricsEvenIfWrappedStoreThrowsOnClose
 - shouldRemoveMetricsOnClose
 - shouldSetFlushListenerOnWrappedCachingStore
@@ -4595,7 +4534,7 @@ org.apache.kafka.streams.state.internals.MeteredSessionStoreTest:
 - shouldNotThrowNullPointerExceptionIfFetchSessionReturnsNull
 - shouldPassChangelogTopicNameToStateStoreSerde
 - shouldPassDefaultChangelogTopicNameToStateStoreSerdeIfLoggingDisabled
-- shouldRecordRestoreLatencyOnRecordRestoreTime
+- shouldRecordRestoreTimeOnInit
 - shouldRemoveFromStoreAndRecordRemoveMetric
 - shouldRemoveMetricsEvenIfWrappedStoreThrowsOnClose
 - shouldRemoveMetricsOnClose
@@ -4673,6 +4612,7 @@ org.apache.kafka.streams.state.internals.MeteredVersionedKeyValueStoreTest:
 - shouldNotSetFlushListenerIfInnerIsNotCaching
 - shouldPassChangelogTopicNameToStateStoreSerde
 - shouldPassDefaultChangelogTopicNameToStateStoreSerdeIfLoggingDisabled
+- shouldRecordMetricsOnInit
 - shouldRemoveMetricsOnCloseEvenIfInnerThrows
 - shouldThrowNullPointerOnDeleteIfKeyIsNull
 - shouldThrowNullPointerOnGetIfKeyIsNull
@@ -4699,7 +4639,7 @@ org.apache.kafka.streams.state.internals.MeteredWindowStoreTest:
 - shouldPassDefaultChangelogTopicNameToStateStoreSerdeIfLoggingDisabled
 - shouldPutToInnerStoreAndRecordPutMetrics
 - shouldRecordFlushLatency
-- shouldRecordRestoreLatencyOnRecordRestoreTime
+- shouldRecordRestoreLatencyOnInit
 - shouldRemoveMetricsEvenIfWrappedStoreThrowsOnClose
 - shouldRemoveMetricsOnClose
 - shouldReturnNoRecordWhenFetchedKeyHasExpired

@@ -50,7 +50,6 @@ org.apache.kafka.server.log.remote.metadata.storage.RemoteLogLeaderEpochStateTes
 - testListAllRemoteLogSegmentsShouldReturnSortedSegments
 - testListAllRemoteLogSegmentsShouldThrowErrorForUnknownSegmentId
 org.apache.kafka.server.log.remote.metadata.storage.RemoteLogMetadataCacheTest:
-- testAwaitInitialized
 - testCacheAddMetadataOnInvalidArgs
 - testCacheUpdateMetadataOnInvalidArgs
 - testDropEventOnInvalidStateTransition
@@ -82,7 +81,6 @@ org.apache.kafka.server.log.remote.metadata.storage.TopicBasedRemoteLogMetadataM
 - testRLMMAPIsAfterRestart
 org.apache.kafka.server.log.remote.metadata.storage.TopicBasedRemoteLogMetadataManagerTest:
 - testDoesTopicExist
-- testDoesTopicExistWithAdminClientExecutionError
 - testInitializationFailure
 - testNewPartitionUpdates
 - testRemoteLogSizeCalculationForUnknownTopicIdPartitionThrows
@@ -100,9 +98,6 @@ org.apache.kafka.server.log.remote.metadata.storage.serialization.RemoteLogSegme
 org.apache.kafka.server.log.remote.quota.RLMQuotaManagerTest:
 - testQuotaExceeded
 - testQuotaUpdate
-org.apache.kafka.server.log.remote.quota.RLMQuotaMetricsTest:
-- testClose
-- testNewSensorWhenExpired
 org.apache.kafka.server.log.remote.storage.ClassLoaderAwareRemoteStorageManagerTest:
 - testWithClassLoader
 org.apache.kafka.server.log.remote.storage.LocalTieredStorageTest:
@@ -125,7 +120,6 @@ org.apache.kafka.server.log.remote.storage.LocalTieredStorageTest:
 - traverseSingleOffloadedRecord
 org.apache.kafka.server.log.remote.storage.RemoteLogManagerConfigTest:
 - testDefaultConfigs
-- testRemoteLogManagerFollowerThreadPoolSize
 - testThreadPoolDefaults
 - testValidConfigs
 - testValidateEmptyStringConfig
@@ -168,7 +162,6 @@ org.apache.kafka.server.log.remote.storage.RemoteLogManagerTest:
 - testGetClassLoaderAwareRemoteStorageManager
 - testGetLeaderEpochCheckpoint
 - testIdempotentClose
-- testIsPartitionReady
 - testLogStartOffsetUpdatedOnStartup
 - testMetricsUpdateOnCopyLogSegmentsFailure
 - testMonitorableRemoteLogStorageManager
@@ -198,7 +191,6 @@ org.apache.kafka.server.log.remote.storage.RemoteLogManagerTest:
 - testStopPartitionsWithoutDeletion
 - testTierLagResetsToZeroOnBecomingFollower
 - testTopicIdCacheUpdates
-- testUpdateRemoteStorageFollowerThreads
 - testUpdateRemoteStorageReaderThreads
 org.apache.kafka.server.log.remote.storage.RemoteLogMetadataManagerTest:
 - testFetchSegments
@@ -212,14 +204,6 @@ org.apache.kafka.server.log.remote.storage.RemoteLogReaderTest:
 - testRemoteLogReaderWithoutError
 org.apache.kafka.server.log.remote.storage.RemoteTopicPartitionDirectoryTest:
 - testSubStr
-org.apache.kafka.server.purgatory.DelayedRemoteFetchTest:
-- testErrorLogReadInfo
-- testFetch
-- testFollowerFetch
-- testMultiplePartitions
-- testMultiplePartitionsWithFailedResults
-- testNotLeaderOrFollower
-- testRequestExpiry
 org.apache.kafka.server.purgatory.DelayedRemoteListOffsetsTest:
 - testPartialResponseWhenNotLeaderOrFollowerExceptionOnOnePartition
 - testResponseOnPartialError
@@ -246,8 +230,6 @@ org.apache.kafka.storage.internals.checkpoint.PartitionMetadataFileTest:
 - testRead
 - testSetRecordWithDifferentTopicId
 - testSetRecordWithSameTopicId
-org.apache.kafka.storage.internals.log.AbstractIndexTest:
-- testResizeInvokeUnmap
 org.apache.kafka.storage.internals.log.BrokerCompressionTest:
 - testBrokerSideCompression
 org.apache.kafka.storage.internals.log.LocalLogTest:
@@ -288,9 +270,6 @@ org.apache.kafka.storage.internals.log.LocalLogTest:
 - testTruncateTo
 - testUpdateConfig
 - testWhenFetchOffsetHigherThanMaxOffset
-org.apache.kafka.storage.internals.log.LogConcurrencyTest:
-- testUncommittedDataNotConsumed
-- testUncommittedDataNotConsumedFrequentSegmentRolls
 org.apache.kafka.storage.internals.log.LogManagerTest:
 - testIsStrayKraftMissingTopicId
 - testIsStrayKraftReplicaInImage

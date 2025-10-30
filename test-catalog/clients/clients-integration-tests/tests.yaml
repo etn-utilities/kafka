@@ -23,8 +23,6 @@ org.apache.kafka.clients.TransactionsExpirationTest:
 - testTransactionAfterProducerIdExpiresWithTV2
 org.apache.kafka.clients.TransactionsWithMaxInFlightOneTest:
 - testTransactionalProducerSingleBrokerMaxInFlightOne
-org.apache.kafka.clients.admin.AdminClientWithPoliciesIntegrationTest:
-- testInvalidAlterConfigsDueToPolicy
 org.apache.kafka.clients.admin.AdminFenceProducersTest:
 - testFenceAfterProducerCommit
 - testFenceBeforeProducerCommit
@@ -49,10 +47,6 @@ org.apache.kafka.clients.admin.DescribeAuthorizedOperationsTest:
 - testClusterAuthorizedOperations
 - testConsumerGroupAuthorizedOperations
 - testTopicAuthorizedOperations
-org.apache.kafka.clients.admin.DescribeProducersWithBrokerIdTest:
-- testDescribeProducersDefaultRoutesToLeader
-- testDescribeProducersFromFollower
-- testDescribeProducersWithInvalidBrokerId
 org.apache.kafka.clients.admin.ListOffsetsIntegrationTest:
 - testListMaxTimestampWithEmptyLog
 - testThreeCompressedRecordsInOneBatch
@@ -68,19 +62,6 @@ org.apache.kafka.clients.admin.StaticBrokerConfigTest:
 - testInternalConfigsDoNotReturnForDescribeConfigs
 - testTopicConfigsGetImpactedIfStaticConfigsAddToBroker
 - testTopicConfigsGetImpactedIfStaticConfigsAddToController
-org.apache.kafka.clients.consumer.ConsumerBounceTest:
-- testAsyncClose
-- testAsyncCloseDuringRebalance
-- testAsyncConsumerConsumptionWithBrokerFailures
-- testAsyncConsumerReceivesFatalExceptionWhenGroupPassesMaxSize
-- testAsyncConsumerSeekAndCommitWithBrokerFailures
-- testAsyncSubscribeWhenTopicUnavailable
-- testClassicClose
-- testClassicCloseDuringRebalance
-- testClassicConsumerConsumptionWithBrokerFailures
-- testClassicConsumerReceivesFatalExceptionWhenGroupPassesMaxSize
-- testClassicConsumerSeekAndCommitWithBrokerFailures
-- testClassicSubscribeWhenTopicUnavailable
 org.apache.kafka.clients.consumer.ConsumerIntegrationTest:
 - testAsyncConsumerWithConsumerProtocolDisabled
 - testFetchPartitionsAfterFailedListenerWithGroupProtocolClassic
@@ -133,9 +114,6 @@ org.apache.kafka.clients.consumer.PlaintextConsumerCallbackTest:
 - testClassicConsumerRebalanceListenerBeginningOffsetsOnPartitionsAssigned
 - testClassicConsumerRebalanceListenerBeginningOffsetsOnPartitionsRevoked
 - testClassicConsumerSeekPositionAndPauseNewlyAssignedPartitionOnPartitionsAssignedCallback
-- testOnPartitionsAssignedCalledWithNewPartitionsOnlyForAsyncConsumer
-- testOnPartitionsAssignedCalledWithNewPartitionsOnlyForClassicCooperative
-- testOnPartitionsAssignedCalledWithNewPartitionsOnlyForClassicEager
 org.apache.kafka.clients.consumer.PlaintextConsumerCommitTest:
 - testAsyncConsumerAsyncCommit
 - testAsyncConsumerAutoCommitIntercept
@@ -157,7 +135,6 @@ org.apache.kafka.clients.consumer.PlaintextConsumerCommitTest:
 - testClassicConsumerSubscribeAndCommitSync
 - testCommitAsyncCompletedBeforeCommitSyncReturns
 - testCommitAsyncCompletedBeforeConsumerCloses
-- testCommitAsyncFailsWhenCoordinatorUnavailableDuringClose
 org.apache.kafka.clients.consumer.PlaintextConsumerFetchTest:
 - testAsyncConsumerFetchHonoursFetchSizeIfLargeRecordNotFirst
 - testAsyncConsumerFetchHonoursMaxPartitionFetchBytesIfLargeRecordNotFirst
@@ -203,6 +180,7 @@ org.apache.kafka.clients.consumer.PlaintextConsumerPollTest:
 - testClassicConsumerPollEventuallyReturnsRecordsWithZeroTimeout
 - testClassicConsumerRecoveryOnPollAfterDelayedRebalance
 org.apache.kafka.clients.consumer.PlaintextConsumerSubscriptionTest:
+- testAsyncConsumerClassicConsumerSubscribeInvalidTopicCanUnsubscribe
 - testAsyncConsumerExpandingTopicSubscriptions
 - testAsyncConsumerPatternSubscription
 - testAsyncConsumerPatternUnsubscription
@@ -211,7 +189,6 @@ org.apache.kafka.clients.consumer.PlaintextConsumerSubscriptionTest:
 - testAsyncConsumerRe2JPatternSubscriptionFetch
 - testAsyncConsumerShrinkingTopicSubscriptions
 - testAsyncConsumerSubscribeInvalidTopicCanClose
-- testAsyncConsumerSubscribeInvalidTopicCanUnsubscribe
 - testAsyncConsumerSubsequentPatternSubscription
 - testAsyncConsumerUnsubscribeTopic
 - testClassicConsumerExpandingTopicSubscriptions
@@ -225,79 +202,6 @@ org.apache.kafka.clients.consumer.PlaintextConsumerSubscriptionTest:
 - testRe2JPatternSubscriptionAndTopicSubscription
 - testRe2JPatternSubscriptionInvalidRegex
 - testTopicIdSubscriptionWithRe2JRegexAndOffsetsFetch
-org.apache.kafka.clients.consumer.PlaintextConsumerTest:
-- testAsyncConsumeCoordinatorFailover
-- testAsyncConsumerAutoOffsetReset
-- testAsyncConsumerCloseLeavesGroupOnInterrupt
-- testAsyncConsumerClusterResourceListener
-- testAsyncConsumerConsumeMessagesWithCreateTime
-- testAsyncConsumerConsumeMessagesWithLogAppendTime
-- testAsyncConsumerConsumingWithNullGroupId
-- testAsyncConsumerEndOffsets
-- testAsyncConsumerFetchOffsetsForTime
-- testAsyncConsumerGroupConsumption
-- testAsyncConsumerHeaders
-- testAsyncConsumerHeadersSerializerDeserializer
-- testAsyncConsumerInterceptors
-- testAsyncConsumerInterceptorsWithWrongKeyValue
-- testAsyncConsumerListTopics
-- testAsyncConsumerNullGroupIdNotSupportedIfCommitting
-- testAsyncConsumerOffsetRelatedWhenTimeoutZero
-- testAsyncConsumerPartitionPauseAndResume
-- testAsyncConsumerPartitionsFor
-- testAsyncConsumerPartitionsForAutoCreate
-- testAsyncConsumerPartitionsForInvalidTopic
-- testAsyncConsumerPauseStateNotPreservedByRebalance
-- testAsyncConsumerPerPartitionLagMetricsCleanUpWithAssign
-- testAsyncConsumerPerPartitionLagMetricsCleanUpWithSubscribe
-- testAsyncConsumerPerPartitionLagMetricsWhenReadCommitted
-- testAsyncConsumerPerPartitionLeadMetricsCleanUpWithAssign
-- testAsyncConsumerPerPartitionLeadMetricsCleanUpWithSubscribe
-- testAsyncConsumerPositionRespectsTimeout
-- testAsyncConsumerPositionRespectsWakeup
-- testAsyncConsumerPositionWithErrorConnectionRespectsWakeup
-- testAsyncConsumerQuotaMetricsNotCreatedIfNoQuotasConfigured
-- testAsyncConsumerSeek
-- testAsyncConsumerSeekThrowsIllegalStateIfPartitionsNotAssigned
-- testAsyncConsumerSimpleConsumption
-- testAsyncConsumerStallBetweenPoll
-- testAsyncConsumerStaticConsumerDetectsNewPartitionCreatedAfterRestart
-- testClassicConsumerAutoOffsetReset
-- testClassicConsumerCloseLeavesGroupOnInterrupt
-- testClassicConsumerClusterResourceListener
-- testClassicConsumerConsumeMessagesWithCreateTime
-- testClassicConsumerConsumeMessagesWithLogAppendTime
-- testClassicConsumerCoordinatorFailover
-- testClassicConsumerEndOffsets
-- testClassicConsumerFetchOffsetsForTime
-- testClassicConsumerGroupConsumption
-- testClassicConsumerHeaders
-- testClassicConsumerHeadersSerializerDeserializer
-- testClassicConsumerInterceptors
-- testClassicConsumerInterceptorsWithWrongKeyValue
-- testClassicConsumerListTopics
-- testClassicConsumerNullGroupIdNotSupportedIfCommitting
-- testClassicConsumerOffsetRelatedWhenTimeoutZero
-- testClassicConsumerPartitionPauseAndResume
-- testClassicConsumerPartitionsFor
-- testClassicConsumerPartitionsForAutoCreate
-- testClassicConsumerPartitionsForInvalidTopic
-- testClassicConsumerPauseStateNotPreservedByRebalance
-- testClassicConsumerPerPartitionLagMetricsCleanUpWithAssign
-- testClassicConsumerPerPartitionLagMetricsCleanUpWithSubscribe
-- testClassicConsumerPerPartitionLagMetricsWhenReadCommitted
-- testClassicConsumerPerPartitionLeadMetricsCleanUpWithAssign
-- testClassicConsumerPerPartitionLeadMetricsCleanUpWithSubscribe
-- testClassicConsumerPositionRespectsTimeout
-- testClassicConsumerPositionRespectsWakeup
-- testClassicConsumerPositionWithErrorConnectionRespectsWakeup
-- testClassicConsumerQuotaMetricsNotCreatedIfNoQuotasConfigured
-- testClassicConsumerSeek
-- testClassicConsumerSeekThrowsIllegalStateIfPartitionsNotAssigned
-- testClassicConsumerSimpleConsumption
-- testClassicConsumerStallBetweenPoll
-- testClassicConsumerStaticConsumerDetectsNewPartitionCreatedAfterRestart
-- testClassicConsumingWithNullGroupId
 org.apache.kafka.clients.consumer.SaslPlainPlaintextConsumerTest:
 - testAsyncConsumeCoordinatorFailover
 - testAsyncConsumerClusterResourceListener
@@ -313,7 +217,6 @@ org.apache.kafka.clients.consumer.ShareConsumerTest:
 - testAcknowledgementCommitCallbackInvalidRecordStateException
 - testAcknowledgementCommitCallbackOnClose
 - testAcknowledgementCommitCallbackSuccessfulAcknowledgement
-- testAcknowledgementCommitCallbackSuccessfulAcknowledgementOnCommitSync
 - testAcknowledgementCommitCallbackThrowsException
 - testAcknowledgementSentOnSubscriptionChange
 - testAcquisitionLockTimeoutOnConsumer
@@ -329,8 +232,6 @@ org.apache.kafka.clients.consumer.ShareConsumerTest:
 - testDeliveryCountDifferentBehaviorWhenClosingSessionWithExplicitAcknowledgement
 - testDeliveryCountNotIncreaseAfterSessionClose
 - testExplicitAcknowledgeCommitSuccess
-- testExplicitAcknowledgeOffsetThrowsNotException
-- testExplicitAcknowledgeOffsetThrowsParametersError
 - testExplicitAcknowledgeReleaseAccept
 - testExplicitAcknowledgeReleaseClose
 - testExplicitAcknowledgeReleasePollAccept
@@ -338,7 +239,6 @@ org.apache.kafka.clients.consumer.ShareConsumerTest:
 - testExplicitAcknowledgeThrowsNotInBatch
 - testExplicitAcknowledgementCommitAsync
 - testExplicitAcknowledgementCommitAsyncPartialBatch
-- testExplicitOverrideAcknowledgeCorruptedMessage
 - testFetchRecordLargerThanMaxPartitionFetchBytes
 - testHeaders
 - testHeadersSerializerDeserializer
@@ -401,12 +301,10 @@ org.apache.kafka.clients.producer.ProducerSendWhileDeletionTest:
 - testSendWithTopicReassignmentIsMidWay
 org.apache.kafka.clients.security.GroupAuthorizerIntegrationTest:
 - testAsyncConsumeCloseWithGroupPermission
-- testAsyncConsumeUnsubscribeWithGroupPermission
 - testAsyncConsumeUnsubscribeWithoutGroupPermission
 - testAuthorizedProduceAndConsumeWithAsync
 - testAuthorizedProduceAndConsumeWithClassic
 - testClassicConsumeCloseWithGroupPermission
-- testClassicConsumeUnsubscribeWithGroupPermission
 - testClassicConsumeUnsubscribeWithoutGroupPermission
 - testUnauthorizedProduceAndConsumeWithAsyncConsumer
 - testUnauthorizedProduceAndConsumeWithClassicConsumer

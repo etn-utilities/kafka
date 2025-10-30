@@ -15,7 +15,6 @@ org.apache.kafka.queue.KafkaEventQueueTest:
 - testDeferredIsQueuedAfterTriggering
 - testHandleEvents
 - testHandleExceptionThrowingAnException
-- testIdleTimeCallback
 - testInterruptedExceptionHandling
 - testInterruptedWithDeferredEvents
 - testInterruptedWithEmptyQueue
@@ -67,7 +66,6 @@ org.apache.kafka.server.common.MetadataVersionTest:
 - testIsElrSupported
 - testListOffsetsValueVersion
 - testMetadataChanged
-- testMetadataVersionsToString
 - testPartitionChangeRecordVersion
 - testPartitionRecordVersion
 - testPrevious
@@ -75,6 +73,8 @@ org.apache.kafka.server.common.MetadataVersionTest:
 - testRegisterBrokerRecordVersion
 - testShortVersion
 - testVersion
+org.apache.kafka.server.common.MetadataVersionValidatorTest:
+- testMetadataVersionValidator
 org.apache.kafka.server.common.ProducerIdsBlockTest:
 - testClaimNextId
 - testDynamicBlock
@@ -194,9 +194,6 @@ org.apache.kafka.server.metrics.KafkaYammerMetricsTest:
 - testTaggedMetricName
 - testTaggedMetricNameWithEmptyValue
 - testUntaggedMetric
-org.apache.kafka.server.metrics.TimeRatioTest:
-- testRatio
-- testRatioMisalignedWindow
 org.apache.kafka.server.mutable.BoundedListTest:
 - testAddAll
 - testAddingToBoundedList
@@ -306,10 +303,6 @@ org.apache.kafka.server.share.persister.PersisterStateManagerTest:
 - testWriteStateRequestWithCoordinatorNodeLookup
 - testWriteStateRequestWithRetryAndCoordinatorNodeLookup
 org.apache.kafka.server.util.CommandLineUtilsTest:
-- testCheckOneOfArgsMultiplePresent
-- testCheckOneOfArgsNoOptions
-- testCheckOneOfArgsNonePresent
-- testCheckOneOfArgsOnePresent
 - testInitializeBootstrapPropertiesWithBothBootstraps
 - testInitializeBootstrapPropertiesWithBrokerBootstrap
 - testInitializeBootstrapPropertiesWithControllerBootstrap
@@ -389,15 +382,6 @@ org.apache.kafka.server.util.timer.TimerTaskListTest:
 org.apache.kafka.server.util.timer.TimerTest:
 - testAlreadyExpiredTask
 - testTaskExpiration
-org.apache.kafka.server.util.timer.TimingWheelTest:
-- testAddCancelledTask
-- testAddExpiredTask
-- testAddTaskInCurrentBucket
-- testAddValidTask
-- testAdvanceClockToNextTick
-- testAdvanceClockWithOverflowWheel
-- testAdvanceClockWithinTick
-- testOverflowWheelCreation
 org.apache.kafka.timeline.BaseHashTableTest:
 - testEmptyTable
 - testExpansion

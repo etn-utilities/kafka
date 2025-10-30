@@ -106,13 +106,6 @@ org.apache.kafka.raft.KafkaNetworkChannelTest:
 - testSendToBlackedOutDestination
 - testUnsupportedVersionError
 - testWakeupClientOnSend
-org.apache.kafka.raft.KafkaRaftClientAutoJoinTest:
-- testAutoAddNewVoter
-- testAutoRemoveOldVoter
-- testObserverDoesNotAddItselfWhenAutoJoinDisabled
-- testObserverDoesNotAutoJoinWithKRaftVersion0
-- testObserverRemovesOldVoterAndAutoJoins
-- testObserversDoNotAutoJoin
 org.apache.kafka.raft.KafkaRaftClientClusterAuthTest:
 - testClusterAuthorizationFailedInBeginQuorumEpoch
 - testClusterAuthorizationFailedInEndQuorumEpoch
@@ -158,7 +151,6 @@ org.apache.kafka.raft.KafkaRaftClientPreVoteTest:
 - testRejectPreVoteIfRemoteLogIsNotUpToDate
 org.apache.kafka.raft.KafkaRaftClientReconfigTest:
 - testAddVoter
-- testAddVoterCompletesEarlyWithAckWhenCommittedFalse
 - testAddVoterFailsWhenLosingLeadership
 - testAddVoterInvalidClusterId
 - testAddVoterInvalidFeatureVersion
@@ -262,7 +254,6 @@ org.apache.kafka.raft.KafkaRaftClientTest:
 - testAppendFailedWithRecordBatchTooLargeException
 - testBeginQuorumEpochHeartbeat
 - testBeginQuorumEpochRequestClusterIdValidation
-- testBeginQuorumShouldNotSendAfterFetchRequest
 - testCandidateElectionTimeout
 - testCandidateIgnoreVoteRequestOnSameEpoch
 - testCandidateWaitsRestOfElectionTimeoutAfterElectionLoss
@@ -351,7 +342,6 @@ org.apache.kafka.raft.KafkaRaftClientTest:
 - testMetrics
 - testNodeDirectoryId
 - testObserverFetchWithNoLocalId
-- testObserverFollowerSendFetchToBestNode
 - testObserverGracefulShutdown
 - testObserverHandleRetryFetchToBootstrapServer
 - testObserverHandleRetryFetchToLeader
@@ -359,7 +349,7 @@ org.apache.kafka.raft.KafkaRaftClientTest:
 - testObserverLeaderRediscoveryAfterRequestTimeout
 - testObserverQuorumDiscoveryFailure
 - testObserverReplication
-- testObserverUnattachedSendFetchToBootstrapServers
+- testObserverSendDiscoveryFetchAfterFetchTimeout
 - testPurgatoryFetchCompletedByFollowerTransition
 - testPurgatoryFetchSatisfiedByWrite
 - testPurgatoryFetchTimeout
@@ -375,10 +365,6 @@ org.apache.kafka.raft.KafkaRaftClientTest:
 - testVoteRequestTimeout
 - testVoteResponseIgnoredAfterBecomingFollower
 - testVoterBecomeProspectiveAfterFetchTimeout
-org.apache.kafka.raft.LeaderAndEpochTest:
-- testConstructorThrowsExceptionWhenLeaderIdIsNull
-- testConstructorWithEmptyLeaderId
-- testConstructorWithValidLeaderId
 org.apache.kafka.raft.LeaderStateTest:
 - testBeginQuorumEpochTimer
 - testCheckQuorum
@@ -587,11 +573,8 @@ org.apache.kafka.raft.RaftEventSimulationTest:
 - leadershipAssignedOnlyOnceWithNetworkPartitionIfThereExistsMajority
 - leadershipWillNotChangeDuringNetworkPartitionIfMajorityStillReachable
 org.apache.kafka.raft.RaftUtilTest:
-- testAddRaftVoterRequestAckWhenCommittedNotIgnorable
-- testAddVoterResponse
 - testErrorResponse
 - testFetchRequestV17Compatibility
-- testRemoveVoterResponse
 - testSingletonBeginQuorumEpochRequestForAllVersion
 - testSingletonBeginQuorumEpochResponseForAllVersion
 - testSingletonDescribeQuorumRequestForAllVersion
@@ -610,7 +593,6 @@ org.apache.kafka.raft.RequestManagerTest:
 - testBackoffAfterFailure
 - testFindReadyWithInflightRequest
 - testFindReadyWithRequestTimedOut
-- testHasRequestTimedOut
 - testIgnoreUnexpectedResponse
 - testRequestTimeout
 - testRequestToBootstrapList
@@ -723,6 +705,9 @@ org.apache.kafka.raft.internals.ThresholdPurgatoryTest:
 - testExpiration
 - testExternalCompletion
 - testThresholdCompletion
+org.apache.kafka.raft.internals.TimeRatioTest:
+- testRatio
+- testRatioMisalignedWindow
 org.apache.kafka.raft.internals.TreeMapLogHistoryTest:
 - testAddAt
 - testClear
