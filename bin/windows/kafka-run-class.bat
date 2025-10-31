@@ -116,7 +116,7 @@ IF NOT DEFINED KAFKA_LOG4J_OPTS (
 ) ELSE (
     rem Check if Log4j 1.x configuration options are present in KAFKA_LOG4J_OPTS
     echo %KAFKA_LOG4J_OPTS% | findstr /r /c:"log4j\.[^ ]*(\.properties|\.xml)$" >nul
-    IF %ERRORLEVEL% == 0 (
+    IF !ERRORLEVEL! == 0 (
         rem Enable Log4j 1.x configuration compatibility mode for Log4j 2
         set LOG4J_COMPATIBILITY=true
         echo DEPRECATED: A Log4j 1.x configuration file has been detected, which is no longer recommended. >&2
