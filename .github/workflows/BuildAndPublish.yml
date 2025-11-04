@@ -60,5 +60,14 @@ jobs:
         VERSION=$(grep "^version=" gradle.properties | cut -d'=' -f2)
         NUGET_VERSION=$(echo $VERSION | sed 's/-SNAPSHOT/-preview/')
         echo "Building NuGet package version: $NUGET_VERSION"
+        
+        # Ensure all expected directories exist (some may be optional)
+        # Create empty placeholder if site-docs doesn't exist to prevent pack errors
+        if [ ! -d "./extract/kafka/site-docs" ] || [ -z "$(ls -A ./extract/kafka/site-docs 2>/dev/null)" ]; then
+          echo "Warning: site-docs directory is empty or missing, creating placeholder"
+          mkdir -p ./extract/kafka/site-docs
+          echo "Documentation not included in this build" > ./extract/kafka/site-docs/README.txt
+        fi
+        
         nuget pack ./nupkg/kafka.nuspec -Version $NUGET_VERSION -noninteractive -basepath .
         nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} -SkipDuplicate -NonInteractive

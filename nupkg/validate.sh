@@ -46,6 +46,8 @@ else
 fi
 
 # Check gradle.properties for version
+version=""
+nuget_version=""
 if [ -f "gradle.properties" ]; then
     version=$(grep "^version=" gradle.properties | cut -d'=' -f2)
     echo "✓ Found version in gradle.properties: $version"
