@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>Apache.Kafka</id>
+    <version>4.2.0-SNAPSHOT</version>
+    <title>Apache Kafka</title>
+    <authors>Apache Software Foundation</authors>
+    <owners>etn-utilities</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <license type="expression">Apache-2.0</license>
+    <projectUrl>https://kafka.apache.org</projectUrl>
+    <description>Apache Kafka is an open-source distributed event streaming platform used by thousands of companies for high-performance data pipelines, streaming analytics, data integration, and mission-critical applications.</description>
+    <summary>Apache Kafka distributed event streaming platform</summary>
+    <releaseNotes>Apache Kafka 4.2.0-SNAPSHOT release</releaseNotes>
+    <copyright>Copyright 2024 The Apache Software Foundation</copyright>
+    <tags>kafka streaming messaging queue distributed event-streaming apache</tags>
+    <repository type="git" url="https://github.com/etn-utilities/kafka" />
+  </metadata>
+  <files>
+    <!-- Include all binaries from the extracted kafka directory -->
+    <file src="extract/kafka/bin/**/*" target="tools/bin" />
+    
+    <!-- Include all libraries -->
+    <file src="extract/kafka/libs/**/*.jar" target="tools/libs" />
+    
+    <!-- Include configuration files -->
+    <file src="extract/kafka/config/**/*" target="tools/config" />
+    
+    <!-- Include licenses and documentation -->
+    <file src="extract/kafka/LICENSE" target="tools/" />
+    <file src="extract/kafka/NOTICE" target="tools/" />
+    <file src="extract/kafka/licenses/**/*" target="tools/licenses" />
+    
+    <!-- Include site-docs if available -->
+    <file src="extract/kafka/site-docs/**/*" target="tools/site-docs" />
+  </files>
+</package>
