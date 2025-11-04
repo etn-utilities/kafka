@@ -22,10 +22,10 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Set up JDK 11
+    - name: Set up JDK 17
       uses: actions/setup-java@v3
       with:
-        java-version: '11'
+        java-version: '17'
         distribution: 'temurin'
         
     # NuGet/setup-nuget@v1.2.0
@@ -45,14 +45,20 @@ jobs:
         
     - name: Extract Kafka package
       run: |
-        ARCHIVE_PATH=$(find . -name "kafka_*-*-SNAPSHOT.tgz")
+        ARCHIVE_PATH=$(find . -name "kafka_*.tgz" | head -1)
+        echo "Found archive: $ARCHIVE_PATH"
         mkdir -p ./extract/kafka
-        tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
+        tar -xzf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1
+        ls -la ./extract/kafka/
   
 #    - name: Quick glance at extraction
 #      run: ls -R ./extract
   
     - name: Generate and publish NuGet packages
       run: |
-        nuget pack ./nupkg/kafka.nuspec -noninteractive -basepath .
+        # Get version from gradle.properties and convert SNAPSHOT to pre-release format for NuGet
+        VERSION=$(grep "^version=" gradle.properties | cut -d'=' -f2)
+        NUGET_VERSION=$(echo $VERSION | sed 's/-SNAPSHOT/-preview/')
+        echo "Building NuGet package version: $NUGET_VERSION"
+        nuget pack ./nupkg/kafka.nuspec -Version $NUGET_VERSION -noninteractive -basepath .
         nuget push *.nupkg -Source github -ApiKey ${{ secrets.GITHUB_TOKEN }} -SkipDuplicate -NonInteractive
