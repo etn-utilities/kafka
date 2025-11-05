@@ -1,3 +1,15 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Build and Publish NuGet
 on:
   workflow_dispatch:
@@ -21,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 #v5.0.0
 
     - name: Retrieve current year
       run: echo "YEAR=$(date +%Y)" >> $GITHUB_ENV
@@ -30,22 +42,20 @@ jobs:
       run: sudo apt-get install -y mono-complete
 
     - name: Setup NuGet
-      uses: NuGet/setup-nuget@v1
+      uses: NuGet/setup-nuget@323ab0502cd38fdc493335025a96c8fdb0edc71f #v2.0.1
 
     - name: Add private NuGet source
       run: nuget sources Add -Username ${{ github.actor }} -Password ${{ secrets.GITHUB_TOKEN }} -StorePasswordInClearText -Name github -Source "https://nuget.pkg.github.com/etn-utilities/index.json"
 
-    - name: Setup Gradle (for extracting build artifacts)
-      uses: ./.github/actions/setup-gradle
+    - name: Download release tarball from build job
+      uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 #v6.0.0
       with:
-        java-version: 23
-
-    - name: Build release tarball
-      run: ./gradlew releaseTarGz
+        name: kafka-release-tarball
+        path: ./artifacts
 
     - name: Find and extract Kafka package
       run: |
-        ARCHIVE_PATH=$(find . -name "kafka_2.13-*.tgz" | head -n 1)
+        ARCHIVE_PATH=$(find ./artifacts -name "kafka_2.13-*.tgz" | head -n 1)
         echo "Found archive: $ARCHIVE_PATH"
         mkdir -p ./extract/kafka
         tar -xvf $ARCHIVE_PATH -C ./extract/kafka --strip-components=1

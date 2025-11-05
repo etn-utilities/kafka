@@ -124,7 +124,7 @@ public final class Snapshots {
         Path immutablePath = snapshotPath(logDir, snapshotId);
         Path deletedPath = deleteRenamePath(immutablePath, snapshotId);
         try {
-            boolean deleted = Files.deleteIfExists(immutablePath) | Files.deleteIfExists(deletedPath);
+            boolean deleted = makeWritableAndDeleteIfExists(immutablePath) | makeWritableAndDeleteIfExists(deletedPath);
             if (deleted) {
                 log.info("Deleted snapshot files for snapshot {}.", snapshotId);
             } else {
@@ -179,6 +179,15 @@ public final class Snapshots {
     public static long lastContainedLogTimestamp(Path logDir, OffsetAndEpoch snapshotId, LogContext logContext) {
         try (FileRawSnapshotReader reader = FileRawSnapshotReader.open(logDir, snapshotId)) {
             return lastContainedLogTimestamp(reader, logContext);
+        }
+    }
+    
+    public static boolean makeWritableAndDeleteIfExists(Path path) throws IOException {
+        try {
+            path.toFile().setWritable(true);
+            return Files.deleteIfExists(path);
+        } catch (IOException ex) {
+            throw ex;
         }
     }
 }

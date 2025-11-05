@@ -150,6 +150,14 @@ jobs:
             **/build/**/*.html
           compression-level: 9
           if-no-files-found: ignore
+      - name: Archive release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: kafka-release-tarball
+          path: |
+            **/build/distributions/*.tgz
+          compression-level: 9
+          if-no-files-found: ignore
       - name: Annotate checkstyle errors
         if: failure()
         run: python .github/scripts/checkstyle.py
