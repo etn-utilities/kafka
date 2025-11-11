@@ -112,7 +112,7 @@ IF NOT DEFINED LOG_DIR (
 
 rem Log4j settings
 IF NOT DEFINED KAFKA_LOG4J_OPTS (
-	set "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=file:%BASE_DIR%/config/tools-log4j2.yaml"
+	set "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=%BASE_DIR%/config/tools-log4j2.yaml"
 ) ELSE (
     rem Check if Log4j 1.x configuration options are present in KAFKA_LOG4J_OPTS
     echo %KAFKA_LOG4J_OPTS% | findstr /r /c:"log4j\.[^ ]*(\.properties|\.xml)$" >nul

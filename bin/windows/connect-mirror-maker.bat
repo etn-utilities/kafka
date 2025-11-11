@@ -26,9 +26,8 @@ set BASE_DIR=%CD%
 popd
 
 rem Log4j settings
-IF ["%KAFKA_LOG4J_OPTS%"] EQU [""] (
-    rem SET KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:"%BASE_DIR%/../config/connect-log4j.properties"
-    SET "KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:%BASE_DIR%/config/log4j.properties"
+IF NOT DEFINED KAFKA_LOG4J_OPTS (
+	set "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=%BASE_DIR%/config/connect-log4j2.yaml"
 )
 
 "%~dp0kafka-run-class.bat" org.apache.kafka.connect.mirror.MirrorMaker %*
