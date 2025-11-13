@@ -115,7 +115,7 @@ IF NOT DEFINED KAFKA_LOG4J_OPTS (
 	set "KAFKA_LOG4J_OPTS=-Dlog4j2.configurationFile=%BASE_DIR%/config/tools-log4j2.yaml"
 ) ELSE (
     rem Check if Log4j 1.x configuration options are present in KAFKA_LOG4J_OPTS
-    echo %KAFKA_LOG4J_OPTS% | findstr /r /c:"log4j\.[^ ]*(\.properties|\.xml)$" >nul
+    echo !KAFKA_LOG4J_OPTS! | findstr /r /c:"log4j\.[^ ]*(\.properties|\.xml)$" >nul
     IF !ERRORLEVEL! == 0 (
         rem Enable Log4j 1.x configuration compatibility mode for Log4j 2
         set LOG4J_COMPATIBILITY=true
