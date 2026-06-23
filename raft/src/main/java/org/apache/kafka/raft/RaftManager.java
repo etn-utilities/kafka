@@ -22,11 +22,11 @@ import org.apache.kafka.common.requests.RequestContext;
 import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.server.common.serialization.RecordSerde;
 
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
 public interface RaftManager<T> {
 
-    CompletableFuture<ApiMessage> handleRequest(
+    CompletionStage<ApiMessage> handleRequest(
         RequestContext context,
         RequestHeader header,
         ApiMessage request,
@@ -41,11 +41,11 @@ public interface RaftManager<T> {
     RaftClient<T> client();
 
     /**
-     * Returns a replicated log.
+     * Returns a raft log.
      * <p>
      * Always returns the same instance. Callers must NOT close it.
      */
-    ReplicatedLog replicatedLog();
+    RaftLog raftLog();
 
     /**
      * Returns the record Serde.

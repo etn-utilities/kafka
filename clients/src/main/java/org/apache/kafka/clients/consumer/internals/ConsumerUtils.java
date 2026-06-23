@@ -37,9 +37,9 @@ import org.apache.kafka.common.metrics.MetricsContext;
 import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.telemetry.internals.ClientTelemetrySender;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Timer;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -173,10 +173,11 @@ public final class ConsumerUtils {
 
     /**
      * Update subscription state and metadata using the provided committed offsets:
-     * <li>Update partition offsets with the committed offsets</li>
-     * <li>Update the metadata with any newer leader epoch discovered in the committed offsets
-     * metadata</li>
-     * </p>
+     * <ul>
+     *   <li>Update partition offsets with the committed offsets</li>
+     *   <li>Update the metadata with any newer leader epoch discovered in the committed offsets
+     *   metadata</li>
+     * </ul>
      * This will ignore any partition included in the <code>offsetsAndMetadata</code> parameter that
      * may no longer be assigned.
      *

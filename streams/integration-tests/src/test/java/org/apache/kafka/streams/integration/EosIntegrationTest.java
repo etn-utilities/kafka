@@ -35,7 +35,6 @@ import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.LongDeserializer;
 import org.apache.kafka.common.serialization.LongSerializer;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.test.api.Flaky;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.KeyValue;
@@ -396,7 +395,6 @@ public class EosIntegrationTest {
         }
     }
 
-    @Flaky("KAFKA-19816")
     @ParameterizedTest
     @MethodSource("groupProtocolAndProcessingThreadsParameters")
     public void shouldNotViolateEosIfOneTaskFails(final String groupProtocol, final boolean processingThreadsEnabled) throws Exception {
@@ -925,18 +923,12 @@ public class EosIntegrationTest {
         kafkaStreams.close();
         waitForApplicationState(Collections.singletonList(kafkaStreams), KafkaStreams.State.NOT_RUNNING, Duration.ofSeconds(60));
 
-        final File checkpointFile = Paths.get(
+        final File taskDir = Paths.get(
             streamsConfiguration.getProperty(StreamsConfig.STATE_DIR_CONFIG),
             streamsConfiguration.getProperty(StreamsConfig.APPLICATION_ID_CONFIG),
-            task00.toString(),
-            ".checkpoint"
+            task00.toString()
         ).toFile();
-        assertTrue(checkpointFile.exists());
-        final Map<TopicPartition, Long> checkpoints = new OffsetCheckpoint(checkpointFile).read();
-        assertEquals(
-            Long.valueOf(restoredOffsetsForPartition0.get()),
-            new ArrayList<>(checkpoints.values()).get(0)
-        );
+        assertTrue(taskDir.exists());
     }
 
 
@@ -1202,7 +1194,6 @@ public class EosIntegrationTest {
                             sum += value;
                         }
                         state.put(key, sum);
-                        state.flush();
                     }
 
 

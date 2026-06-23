@@ -23,8 +23,9 @@ import org.apache.kafka.common.{TopicIdPartition, Uuid}
 import org.apache.kafka.common.errors.{FencedLeaderEpochException, NotLeaderOrFollowerException}
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.MemoryRecords
+import org.apache.kafka.common.record.internal.MemoryRecords
 import org.apache.kafka.common.requests.FetchRequest
+import org.apache.kafka.server.quota.ReplicaQuota
 import org.apache.kafka.server.storage.log.{FetchIsolation, FetchParams, FetchPartitionData}
 import org.apache.kafka.storage.internals.log.{FetchDataInfo, FetchPartitionStatus, LogOffsetMetadata, LogOffsetSnapshot, LogReadResult}
 import org.junit.jupiter.api.Test
@@ -33,6 +34,8 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.ArgumentMatchers.{any, anyInt}
 import org.mockito.Mockito.{mock, when}
+
+import java.util
 
 class DelayedFetchTest {
   private val maxBytes = 1024
@@ -59,7 +62,7 @@ class DelayedFetchTest {
 
     val delayedFetch = new DelayedFetch(
       params = fetchParams,
-      fetchPartitionStatus = Seq(topicIdPartition -> fetchStatus),
+      fetchPartitionStatus = createFetchPartitionStatusMap(topicIdPartition, fetchStatus),
       replicaManager = replicaManager,
       quota = replicaQuota,
       responseCallback = callback
@@ -105,7 +108,7 @@ class DelayedFetchTest {
 
     val delayedFetch = new DelayedFetch(
       params = fetchParams,
-      fetchPartitionStatus = Seq(topicIdPartition -> fetchStatus),
+      fetchPartitionStatus = createFetchPartitionStatusMap(topicIdPartition, fetchStatus),
       replicaManager = replicaManager,
       quota = replicaQuota,
       responseCallback = callback
@@ -145,7 +148,7 @@ class DelayedFetchTest {
 
     val delayedFetch = new DelayedFetch(
       params = fetchParams,
-      fetchPartitionStatus = Seq(topicIdPartition -> fetchStatus),
+      fetchPartitionStatus = createFetchPartitionStatusMap(topicIdPartition, fetchStatus),
       replicaManager = replicaManager,
       quota = replicaQuota,
       responseCallback = callback
@@ -196,7 +199,7 @@ class DelayedFetchTest {
 
     val delayedFetch = new DelayedFetch(
       params = fetchParams,
-      fetchPartitionStatus = Seq(topicIdPartition -> fetchStatus),
+      fetchPartitionStatus = createFetchPartitionStatusMap(topicIdPartition, fetchStatus),
       replicaManager = replicaManager,
       quota = replicaQuota,
       responseCallback = callback
@@ -267,4 +270,9 @@ class DelayedFetchTest {
       error)
   }
 
+  private def createFetchPartitionStatusMap(tpId: TopicIdPartition, status: FetchPartitionStatus): util.LinkedHashMap[TopicIdPartition, FetchPartitionStatus] = {
+    val statusMap = new util.LinkedHashMap[TopicIdPartition, FetchPartitionStatus]
+    statusMap.put(tpId, status)
+    statusMap
+  }
 }

@@ -31,7 +31,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * This class holds the data that is needed to participate in the Streams rebalance protocol.
@@ -121,6 +123,7 @@ public class StreamsRebalanceData {
         }
 
     }
+
     public static class EndpointPartitions {
         private final List<TopicPartition> activePartitions;
         private final List<TopicPartition> standbyPartitions;
@@ -157,18 +160,23 @@ public class StreamsRebalanceData {
 
         private final Set<TaskId> warmupTasks;
 
+        private final boolean isGroupReady;
+
         private Assignment() {
             this.activeTasks = Set.of();
             this.standbyTasks = Set.of();
             this.warmupTasks = Set.of();
+            this.isGroupReady = false;
         }
 
         public Assignment(final Set<TaskId> activeTasks,
                           final Set<TaskId> standbyTasks,
-                          final Set<TaskId> warmupTasks) {
+                          final Set<TaskId> warmupTasks,
+                          final boolean isGroupReady) {
             this.activeTasks = Set.copyOf(Objects.requireNonNull(activeTasks, "Active tasks cannot be null"));
             this.standbyTasks = Set.copyOf(Objects.requireNonNull(standbyTasks, "Standby tasks cannot be null"));
             this.warmupTasks = Set.copyOf(Objects.requireNonNull(warmupTasks, "Warmup tasks cannot be null"));
+            this.isGroupReady = isGroupReady;
         }
 
         public Set<TaskId> activeTasks() {
@@ -183,6 +191,10 @@ public class StreamsRebalanceData {
             return warmupTasks;
         }
 
+        public boolean isGroupReady() {
+            return isGroupReady;
+        }
+
         @Override
         public boolean equals(final Object o) {
             if (this == o) {
@@ -194,16 +206,17 @@ public class StreamsRebalanceData {
             final Assignment that = (Assignment) o;
             return Objects.equals(activeTasks, that.activeTasks)
                 && Objects.equals(standbyTasks, that.standbyTasks)
-                && Objects.equals(warmupTasks, that.warmupTasks);
+                && Objects.equals(warmupTasks, that.warmupTasks)
+                && isGroupReady == that.isGroupReady;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(activeTasks, standbyTasks, warmupTasks);
+            return Objects.hash(activeTasks, standbyTasks, warmupTasks, isGroupReady);
         }
 
         public Assignment copy() {
-            return new Assignment(activeTasks, standbyTasks, warmupTasks);
+            return new Assignment(activeTasks, standbyTasks, warmupTasks, isGroupReady);
         }
 
         @Override
@@ -212,6 +225,7 @@ public class StreamsRebalanceData {
                 "activeTasks=" + activeTasks +
                 ", standbyTasks=" + standbyTasks +
                 ", warmupTasks=" + warmupTasks +
+                ", isGroupReady=" + isGroupReady +
                 '}';
         }
     }
@@ -318,9 +332,13 @@ public class StreamsRebalanceData {
 
     private final Optional<HostInfo> endpoint;
 
+    private final Optional<String> rackId;
+
     private final Map<String, String> clientTags;
 
     private final Map<String, Subtopology> subtopologies;
+
+    private final Supplier<Map<TaskId, Long>> taskOffsetSum;
 
     private final AtomicReference<Assignment> reconciledAssignment = new AtomicReference<>(Assignment.EMPTY);
 
@@ -332,14 +350,22 @@ public class StreamsRebalanceData {
 
     private final AtomicInteger heartbeatIntervalMs = new AtomicInteger(-1);
 
+    private final AtomicInteger taskOffsetIntervalMs = new AtomicInteger(-1);
+
+    private final AtomicLong acceptableRecoveryLag = new AtomicLong(-1);
+
     public StreamsRebalanceData(final UUID processId,
                                 final Optional<HostInfo> endpoint,
+                                final Optional<String> rackId,
                                 final Map<String, Subtopology> subtopologies,
-                                final Map<String, String> clientTags) {
+                                final Map<String, String> clientTags,
+                                final Supplier<Map<TaskId, Long>> taskOffsetSum) {
         this.processId = Objects.requireNonNull(processId, "Process ID cannot be null");
         this.endpoint = Objects.requireNonNull(endpoint, "Endpoint cannot be null");
+        this.rackId = Objects.requireNonNull(rackId, "Rack ID cannot be null");
         this.subtopologies = Map.copyOf(Objects.requireNonNull(subtopologies, "Subtopologies cannot be null"));
         this.clientTags = Map.copyOf(Objects.requireNonNull(clientTags, "Client tags cannot be null"));
+        this.taskOffsetSum = Objects.requireNonNull(taskOffsetSum, "Task offset sum supplier cannot be null");
     }
 
     public UUID processId() {
@@ -350,12 +376,20 @@ public class StreamsRebalanceData {
         return endpoint;
     }
 
+    public Optional<String> rackId() {
+        return rackId;
+    }
+
     public Map<String, String> clientTags() {
         return clientTags;
     }
 
     public Map<String, Subtopology> subtopologies() {
         return subtopologies;
+    }
+
+    public Map<TaskId, Long> taskOffsetSum() {
+        return taskOffsetSum.get();
     }
 
     public int topologyEpoch() {
@@ -406,6 +440,38 @@ public class StreamsRebalanceData {
     /** Returns the heartbeat interval in milliseconds, or -1 if not yet set. */
     public int heartbeatIntervalMs() {
         return heartbeatIntervalMs.get();
+    }
+
+    /** Updated whenever a heartbeat response is received from the broker. */
+    public void setTaskOffsetIntervalMs(final int taskOffsetIntervalMs) {
+        this.taskOffsetIntervalMs.set(taskOffsetIntervalMs);
+    }
+
+    /** Returns the task offset interval in milliseconds, or -1 if not yet set. */
+    public int taskOffsetIntervalMs() {
+        return taskOffsetIntervalMs.get();
+    }
+
+    /**
+     * Updated whenever a heartbeat response is received from the broker.
+     *
+     * <p>If the broker does not support warmup tasks, this field should be set to {@code -1}.
+     * For this case, the Kafka Streams client is not required to populate {@code TaskOffsets} or
+     * {@code TaskEndOffsets} fields in {@link org.apache.kafka.common.requests.StreamsGroupHeartbeatRequest}.
+     */
+    public void setAcceptableRecoveryLag(final long acceptableRecoveryLag) {
+        this.acceptableRecoveryLag.set(acceptableRecoveryLag);
+    }
+
+    /**
+     * Returns the acceptable recovery lag.
+     *
+     * <p>If acceptable recovery lag is set to {@code -1}, it means the broker doesn't support warmup tasks,
+     * and the Kafka Streams client is not required to populate {@code TaskOffsets} or {@code TaskEndOffsets} fields
+     * in {@link org.apache.kafka.common.requests.StreamsGroupHeartbeatRequest}.
+     */
+    public long acceptableRecoveryLag() {
+        return acceptableRecoveryLag.get();
     }
 
 }

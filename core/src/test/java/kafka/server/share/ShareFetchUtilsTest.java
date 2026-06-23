@@ -18,6 +18,7 @@ package kafka.server.share;
 
 import kafka.server.ReplicaManager;
 
+import org.apache.kafka.clients.consumer.internals.ShareAcquireMode;
 import org.apache.kafka.common.TopicIdPartition;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
@@ -26,13 +27,14 @@ import org.apache.kafka.common.errors.FencedLeaderEpochException;
 import org.apache.kafka.common.message.ShareFetchResponseData;
 import org.apache.kafka.common.message.ShareFetchResponseData.AcquiredRecords;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.record.FileRecords;
-import org.apache.kafka.common.record.MemoryRecords;
-import org.apache.kafka.common.record.MemoryRecordsBuilder;
-import org.apache.kafka.common.record.RecordBatch;
-import org.apache.kafka.common.record.Records;
-import org.apache.kafka.common.record.SimpleRecord;
+import org.apache.kafka.common.record.internal.FileRecords;
+import org.apache.kafka.common.record.internal.MemoryRecords;
+import org.apache.kafka.common.record.internal.MemoryRecordsBuilder;
+import org.apache.kafka.common.record.internal.RecordBatch;
+import org.apache.kafka.common.record.internal.Records;
+import org.apache.kafka.common.record.internal.SimpleRecord;
 import org.apache.kafka.common.requests.FetchRequest;
+import org.apache.kafka.server.share.PartitionMetadataProvider;
 import org.apache.kafka.server.share.SharePartitionKey;
 import org.apache.kafka.server.share.fetch.ShareAcquiredRecords;
 import org.apache.kafka.server.share.fetch.ShareFetch;
@@ -54,6 +56,7 @@ import org.mockito.Mockito;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +70,7 @@ import java.util.stream.Stream;
 import static org.apache.kafka.server.share.fetch.ShareFetchTestUtils.createFileRecords;
 import static org.apache.kafka.server.share.fetch.ShareFetchTestUtils.createShareAcquiredRecords;
 import static org.apache.kafka.server.share.fetch.ShareFetchTestUtils.memoryRecordsBuilder;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -86,6 +90,7 @@ public class ShareFetchUtilsTest {
         FetchRequest.ORDINARY_CONSUMER_ID, -1, 0, 1, 1024 * 1024, FetchIsolation.HIGH_WATERMARK,
         Optional.empty(), true);
     private static final int BATCH_SIZE = 500;
+    private static final byte BATCH_OPTIMIZED = ShareAcquireMode.BATCH_OPTIMIZED.id();
     private static final BiConsumer<SharePartitionKey, Throwable> EXCEPTION_HANDLER = (key, exception) -> {
         // No-op
     };
@@ -104,10 +109,10 @@ public class ShareFetchUtilsTest {
         when(sp0.nextFetchOffset()).thenReturn((long) 3);
         when(sp1.nextFetchOffset()).thenReturn((long) 3);
 
-        when(sp0.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
+        when(sp0.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
             createShareAcquiredRecords(new ShareFetchResponseData.AcquiredRecords()
                 .setFirstOffset(0).setLastOffset(3).setDeliveryCount((short) 1)));
-        when(sp1.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
+        when(sp1.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
             createShareAcquiredRecords(new ShareFetchResponseData.AcquiredRecords()
                 .setFirstOffset(100).setLastOffset(103).setDeliveryCount((short) 1)));
 
@@ -116,7 +121,7 @@ public class ShareFetchUtilsTest {
         sharePartitions.put(tp1, sp1);
 
         ShareFetch shareFetch = new ShareFetch(FETCH_PARAMS, groupId, memberId,
-            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_SIZE, 100, BROKER_TOPIC_STATS);
+            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_OPTIMIZED, BATCH_SIZE, 100, BROKER_TOPIC_STATS);
 
         MemoryRecords records = MemoryRecords.withRecords(Compression.NONE,
             new SimpleRecord("0".getBytes(), "v".getBytes()),
@@ -139,7 +144,7 @@ public class ShareFetchUtilsTest {
                 OptionalInt.empty(), false))
         );
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData =
-                ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, mock(ReplicaManager.class), EXCEPTION_HANDLER);
+                ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, mock(PartitionMetadataProvider.class), EXCEPTION_HANDLER);
 
         assertEquals(2, resultData.size());
         assertTrue(resultData.containsKey(tp0));
@@ -169,15 +174,15 @@ public class ShareFetchUtilsTest {
         when(sp0.nextFetchOffset()).thenReturn((long) 3);
         when(sp1.nextFetchOffset()).thenReturn((long) 3);
 
-        when(sp0.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
-        when(sp1.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
+        when(sp0.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
+        when(sp1.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
 
         LinkedHashMap<TopicIdPartition, SharePartition> sharePartitions = new LinkedHashMap<>();
         sharePartitions.put(tp0, sp0);
         sharePartitions.put(tp1, sp1);
 
         ShareFetch shareFetch = new ShareFetch(FETCH_PARAMS, groupId, memberId,
-            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_SIZE, 100, BROKER_TOPIC_STATS);
+            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_OPTIMIZED, BATCH_SIZE, 100, BROKER_TOPIC_STATS);
 
         List<ShareFetchPartitionData> responseData = List.of(
             new ShareFetchPartitionData(tp0, 0, new FetchPartitionData(Errors.NONE, 0L, 0L,
@@ -188,7 +193,7 @@ public class ShareFetchUtilsTest {
                 OptionalInt.empty(), false))
         );
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData =
-            ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, mock(ReplicaManager.class), EXCEPTION_HANDLER);
+            ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, mock(PartitionMetadataProvider.class), EXCEPTION_HANDLER);
 
         assertEquals(2, resultData.size());
         assertTrue(resultData.containsKey(tp0));
@@ -216,7 +221,7 @@ public class ShareFetchUtilsTest {
         sharePartitions.put(tp1, sp1);
 
         ShareFetch shareFetch = new ShareFetch(FETCH_PARAMS, groupId, Uuid.randomUuid().toString(),
-            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_SIZE, 100, BROKER_TOPIC_STATS);
+            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_OPTIMIZED, BATCH_SIZE, 100, BROKER_TOPIC_STATS);
 
         ReplicaManager replicaManager = mock(ReplicaManager.class);
 
@@ -227,11 +232,11 @@ public class ShareFetchUtilsTest {
         when(sp0.nextFetchOffset()).thenReturn((long) 0, (long) 5);
         when(sp1.nextFetchOffset()).thenReturn((long) 4, (long) 4);
 
-        when(sp0.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
+        when(sp0.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
             ShareAcquiredRecords.empty(),
             createShareAcquiredRecords(new ShareFetchResponseData.AcquiredRecords()
                 .setFirstOffset(0).setLastOffset(3).setDeliveryCount((short) 1)));
-        when(sp1.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
+        when(sp1.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(
             createShareAcquiredRecords(new ShareFetchResponseData.AcquiredRecords()
                 .setFirstOffset(100).setLastOffset(103).setDeliveryCount((short) 1)),
             ShareAcquiredRecords.empty());
@@ -251,7 +256,7 @@ public class ShareFetchUtilsTest {
                 OptionalInt.empty(), false))
         );
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData1 =
-            ShareFetchUtils.processFetchResponse(shareFetch, responseData1, sharePartitions, replicaManager, EXCEPTION_HANDLER);
+            ShareFetchUtils.processFetchResponse(shareFetch, responseData1, sharePartitions, new ReplicaManagerPartitionMetadataProvider(replicaManager), EXCEPTION_HANDLER);
 
         assertEquals(2, resultData1.size());
         assertTrue(resultData1.containsKey(tp0));
@@ -281,7 +286,7 @@ public class ShareFetchUtilsTest {
                 OptionalInt.empty(), false))
         );
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData2 =
-            ShareFetchUtils.processFetchResponse(shareFetch, responseData2, sharePartitions, replicaManager, EXCEPTION_HANDLER);
+            ShareFetchUtils.processFetchResponse(shareFetch, responseData2, sharePartitions, new ReplicaManagerPartitionMetadataProvider(replicaManager), EXCEPTION_HANDLER);
 
         assertEquals(2, resultData2.size());
         assertTrue(resultData2.containsKey(tp0));
@@ -308,14 +313,14 @@ public class ShareFetchUtilsTest {
         sharePartitions.put(tp0, sp0);
 
         ShareFetch shareFetch = new ShareFetch(FETCH_PARAMS, groupId, Uuid.randomUuid().toString(),
-            new CompletableFuture<>(), List.of(tp0), BATCH_SIZE, 100, BROKER_TOPIC_STATS);
+            new CompletableFuture<>(), List.of(tp0), BATCH_OPTIMIZED, BATCH_SIZE, 100, BROKER_TOPIC_STATS);
 
         ReplicaManager replicaManager = mock(ReplicaManager.class);
 
         // Mock the replicaManager.fetchOffsetForTimestamp method to return a timestamp and offset for the topic partition.
         FileRecords.TimestampAndOffset timestampAndOffset = new FileRecords.TimestampAndOffset(100L, 1L, Optional.empty());
         doReturn(new OffsetResultHolder(Optional.of(timestampAndOffset), Optional.empty())).when(replicaManager).fetchOffsetForTimestamp(any(TopicPartition.class), anyLong(), any(), any(), anyBoolean());
-        when(sp0.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
+        when(sp0.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
 
         MemoryRecords records = MemoryRecords.withRecords(Compression.NONE,
             new SimpleRecord("0".getBytes(), "v".getBytes()),
@@ -330,7 +335,7 @@ public class ShareFetchUtilsTest {
                 OptionalInt.empty(), false)));
 
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData =
-            ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, replicaManager, EXCEPTION_HANDLER);
+            ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, new ReplicaManagerPartitionMetadataProvider(replicaManager), EXCEPTION_HANDLER);
 
         assertEquals(1, resultData.size());
         assertTrue(resultData.containsKey(tp0));
@@ -345,7 +350,7 @@ public class ShareFetchUtilsTest {
                 records, Optional.empty(), OptionalLong.empty(), Optional.empty(),
                 OptionalInt.empty(), false)));
 
-        resultData = ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, replicaManager, EXCEPTION_HANDLER);
+        resultData = ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions, new ReplicaManagerPartitionMetadataProvider(replicaManager), EXCEPTION_HANDLER);
 
         assertEquals(1, resultData.size());
         assertTrue(resultData.containsKey(tp0));
@@ -376,7 +381,7 @@ public class ShareFetchUtilsTest {
         Uuid memberId = Uuid.randomUuid();
         // Set max fetch records to 10
         ShareFetch shareFetch = new ShareFetch(FETCH_PARAMS, groupId, memberId.toString(),
-            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_SIZE, 10, BROKER_TOPIC_STATS);
+            new CompletableFuture<>(), List.of(tp0, tp1), BATCH_OPTIMIZED, BATCH_SIZE, 10, BROKER_TOPIC_STATS);
 
         LinkedHashMap<Long, Integer> recordsPerOffset = new LinkedHashMap<>();
         recordsPerOffset.put(0L, 1);
@@ -396,10 +401,10 @@ public class ShareFetchUtilsTest {
             records2, Optional.empty(), OptionalLong.empty(), Optional.empty(),
             OptionalInt.empty(), false);
 
-        when(sp0.acquire(memberId.toString(), BATCH_SIZE, 10, 0, fetchPartitionData1, FetchIsolation.HIGH_WATERMARK)).thenReturn(
+        when(sp0.acquire(memberId.toString(), ShareAcquireMode.BATCH_OPTIMIZED, BATCH_SIZE, 10, 0, fetchPartitionData1, FetchIsolation.HIGH_WATERMARK)).thenReturn(
             createShareAcquiredRecords(new ShareFetchResponseData.AcquiredRecords()
                 .setFirstOffset(0).setLastOffset(1).setDeliveryCount((short) 1)));
-        when(sp1.acquire(memberId.toString(), BATCH_SIZE, 8, 0, fetchPartitionData2, FetchIsolation.HIGH_WATERMARK)).thenReturn(
+        when(sp1.acquire(memberId.toString(), ShareAcquireMode.BATCH_OPTIMIZED, BATCH_SIZE, 8, 0, fetchPartitionData2, FetchIsolation.HIGH_WATERMARK)).thenReturn(
             createShareAcquiredRecords(new ShareFetchResponseData.AcquiredRecords()
                 .setFirstOffset(100).setLastOffset(103).setDeliveryCount((short) 1)));
 
@@ -412,7 +417,7 @@ public class ShareFetchUtilsTest {
 
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData =
             ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions,
-                mock(ReplicaManager.class), EXCEPTION_HANDLER);
+                mock(PartitionMetadataProvider.class), EXCEPTION_HANDLER);
 
         assertEquals(2, resultData.size());
         assertTrue(resultData.containsKey(tp0));
@@ -450,7 +455,7 @@ public class ShareFetchUtilsTest {
         // Mock the replicaManager.fetchOffsetForTimestamp method to throw exception.
         Throwable exception = new FencedLeaderEpochException("Fenced exception");
         doThrow(exception).when(replicaManager).fetchOffsetForTimestamp(any(TopicPartition.class), anyLong(), any(), any(), anyBoolean());
-        when(sp0.acquire(anyString(), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
+        when(sp0.acquire(anyString(), any(ShareAcquireMode.class), anyInt(), anyInt(), anyLong(), any(FetchPartitionData.class), any())).thenReturn(ShareAcquiredRecords.empty());
 
         // When no records are acquired from share partition.
         List<ShareFetchPartitionData> responseData = List.of(
@@ -461,7 +466,7 @@ public class ShareFetchUtilsTest {
         BiConsumer<SharePartitionKey, Throwable> exceptionHandler = mock(BiConsumer.class);
         Map<TopicIdPartition, ShareFetchResponseData.PartitionData> resultData =
             ShareFetchUtils.processFetchResponse(shareFetch, responseData, sharePartitions,
-                replicaManager, exceptionHandler);
+                new ReplicaManagerPartitionMetadataProvider(replicaManager), exceptionHandler);
 
         assertTrue(resultData.isEmpty());
         Mockito.verify(shareFetch, times(1)).addErroneous(tp0, exception);
@@ -624,6 +629,103 @@ public class ShareFetchUtilsTest {
         Records slicedRecords = ShareFetchUtils.maybeSliceFetchRecords(
             records, new ShareAcquiredRecords(List.of(), 3));
         assertEquals(records, slicedRecords);
+    }
+
+    @Test
+    void testAccumulateAcquiredRecords() {
+        List<AcquiredRecords> input = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(0).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(1).setLastOffset(1).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(2).setLastOffset(2).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(4).setLastOffset(4).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(5).setLastOffset(5).setDeliveryCount((short) 2)
+        );
+
+        List<AcquiredRecords> result = new ArrayList<>();
+        ShareFetchUtils.accumulateAcquiredRecords(result, input);
+        List<AcquiredRecords> expected = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(1).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(2).setLastOffset(2).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(4).setLastOffset(5).setDeliveryCount((short) 2)
+        );
+        assertArrayEquals(expected.toArray(), result.toArray());
+    }
+
+    @Test
+    void testAccumulateAcquiredRecordsAllBatches() {
+        List<AcquiredRecords> input = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(0).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(1).setLastOffset(1).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(2).setLastOffset(2).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(3).setLastOffset(3).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(4).setLastOffset(4).setDeliveryCount((short) 1)
+        );
+
+        List<AcquiredRecords> result = new ArrayList<>();
+        ShareFetchUtils.accumulateAcquiredRecords(result, input);
+        List<AcquiredRecords> expected = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(4).setDeliveryCount((short) 1)
+        );
+        assertArrayEquals(expected.toArray(), result.toArray());
+    }
+
+    @Test
+    void testAccumulateAcquiredRecordsWithRanges() {
+        List<AcquiredRecords> input = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(3).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(4).setLastOffset(4).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(5).setLastOffset(8).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(10).setLastOffset(15).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(16).setLastOffset(20).setDeliveryCount((short) 2)
+        );
+
+        List<AcquiredRecords> result = new ArrayList<>();
+        ShareFetchUtils.accumulateAcquiredRecords(result, input);
+        List<AcquiredRecords> expected = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(4).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(5).setLastOffset(8).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(10).setLastOffset(20).setDeliveryCount((short) 2)
+        );
+        assertArrayEquals(expected.toArray(), result.toArray());
+    }
+
+    @Test
+    void testAccumulateAcquiredRecordsEmptyList() {
+        List<AcquiredRecords> result = new ArrayList<>();
+        ShareFetchUtils.accumulateAcquiredRecords(result, List.of());
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void testAccumulateAcquiredRecordsSingleRecord() {
+        List<AcquiredRecords> result = new ArrayList<>();
+        List<AcquiredRecords> input = List.of(
+            new AcquiredRecords().setFirstOffset(5).setLastOffset(5).setDeliveryCount((short) 4));
+        ShareFetchUtils.accumulateAcquiredRecords(result, input);
+        assertArrayEquals(input.toArray(), result.toArray());
+    }
+
+    @Test
+    void testAccumulateAcquiredRecordsNoMerging() {
+        List<AcquiredRecords> input = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(0).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(2).setLastOffset(2).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(4).setLastOffset(4).setDeliveryCount((short) 1)
+        );
+
+        List<AcquiredRecords> result = new ArrayList<>();
+        ShareFetchUtils.accumulateAcquiredRecords(result, input);
+        assertArrayEquals(input.toArray(), result.toArray());
+
+        input = List.of(
+            new AcquiredRecords().setFirstOffset(0).setLastOffset(0).setDeliveryCount((short) 1),
+            new AcquiredRecords().setFirstOffset(1).setLastOffset(1).setDeliveryCount((short) 2),
+            new AcquiredRecords().setFirstOffset(2).setLastOffset(2).setDeliveryCount((short) 3)
+        );
+
+        result = new ArrayList<>();
+        ShareFetchUtils.accumulateAcquiredRecords(result, input);
+        assertArrayEquals(input.toArray(), result.toArray());
     }
 
     private static class RecordsArgumentsProvider implements ArgumentsProvider {

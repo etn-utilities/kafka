@@ -72,8 +72,8 @@ import org.apache.kafka.common.metrics.stats.Avg;
 import org.apache.kafka.common.network.Selectable;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.record.Record;
-import org.apache.kafka.common.record.RecordBatch;
+import org.apache.kafka.common.record.internal.Record;
+import org.apache.kafka.common.record.internal.RecordBatch;
 import org.apache.kafka.common.requests.AddOffsetsToTxnResponse;
 import org.apache.kafka.common.requests.EndTxnResponse;
 import org.apache.kafka.common.requests.FindCoordinatorRequest;
@@ -92,10 +92,10 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter;
 import org.apache.kafka.common.telemetry.internals.ClientTelemetrySender;
 import org.apache.kafka.common.utils.LogCaptureAppender;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.test.MockMetricsReporter;
 import org.apache.kafka.test.MockPartitioner;
 import org.apache.kafka.test.MockProducerInterceptor;
@@ -174,6 +174,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class KafkaProducerTest {
+
+    private static final String INIT_TXN_TIMEOUT_MSG =
+            "InitTransactions timed out - " +
+                    "did not complete coordinator discovery or " +
+                    "receive the InitProducerId response within max.block.ms.";
+    
     private final String topic = "topic";
     private final Collection<Node> nodes = Collections.singletonList(NODE);
     private final Cluster emptyCluster = new Cluster(
@@ -1322,7 +1328,7 @@ public class KafkaProducerTest {
                 "Timed out while waiting for expected `InitProducerId` request to be sent");
 
             time.sleep(maxBlockMs);
-            TestUtils.assertFutureThrows(TimeoutException.class, future);
+            TestUtils.assertFutureThrowsWithMessageContaining(TimeoutException.class, future, INIT_TXN_TIMEOUT_MSG);
 
             client.respond(initProducerIdResponse(1L, (short) 5, Errors.NONE));
 
@@ -1352,7 +1358,8 @@ public class KafkaProducerTest {
                     ((FindCoordinatorRequest) request).data().keyType() == FindCoordinatorRequest.CoordinatorType.TRANSACTION.id(),
                 FindCoordinatorResponse.prepareResponse(Errors.NONE, "bad-transaction", NODE));
 
-            assertThrows(TimeoutException.class, producer::initTransactions);
+            var timeoutEx = assertThrows(TimeoutException.class, producer::initTransactions);
+            assertTrue(timeoutEx.getMessage().contains(INIT_TXN_TIMEOUT_MSG));
 
             client.prepareResponse(
                 request -> request instanceof FindCoordinatorRequest &&
@@ -2067,6 +2074,163 @@ public class KafkaProducerTest {
     }
 
     @Test
+    @SuppressWarnings("removal")
+    public void testSendOffsetsToTransactionNegotiatesV6WhenMetadataKnowsTopicId() {
+        var topic = "topic";
+        var topicId = Uuid.randomUuid();
+        var tp = new TopicPartition(topic, 0);
+        var groupId = "group";
+
+        var properties = new Properties();
+        properties.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "some.id");
+        properties.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 10000);
+        properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9000");
+        properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        var time = new MockTime(1);
+        var metadata = newMetadata(0, 0, Long.MAX_VALUE);
+        var client = new MockClient(time, metadata);
+        // Seed the metadata cache with a known topic id so the producer can
+        // negotiate v6 of TxnOffsetCommit (KIP-1319).
+        client.updateMetadata(RequestTestUtils.metadataUpdateWithIds(
+            1,
+            Map.of(topic, 1),
+            Map.of(topic, topicId)
+        ));
+
+        var nodeApiVersions = new NodeApiVersions(
+            NodeApiVersions.create().allSupportedApiVersions().values(),
+            List.of(new ApiVersionsResponseData.SupportedFeatureKey()
+                .setName("transaction.version")
+                .setMaxVersion((short) 2)
+                .setMinVersion((short) 0)),
+            List.of(new ApiVersionsResponseData.FinalizedFeatureKey()
+                .setName("transaction.version")
+                .setMaxVersionLevel((short) 2)
+                .setMinVersionLevel((short) 2)),
+            0
+        );
+        client.setNodeApiVersions(nodeApiVersions);
+        var apiVersions = new ApiVersions();
+        apiVersions.update(NODE.idString(), nodeApiVersions);
+
+        client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, "some.id", NODE));
+        client.prepareResponse(initProducerIdResponse(1L, (short) 5, Errors.NONE));
+        client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, "some.id", NODE));
+        client.prepareResponse(request -> {
+            var txnRequest = (TxnOffsetCommitRequest) request;
+            assertEquals(groupId, txnRequest.data().groupId());
+            assertTrue(txnRequest.version() >= 6, "Expected TxnOffsetCommit at v6+, got " + txnRequest.version());
+            assertEquals(1, txnRequest.data().topics().size());
+            assertEquals(topicId, txnRequest.data().topics().get(0).topicId());
+            return true;
+        }, txnOffsetsCommitResponse(Map.of(tp, Errors.NONE)));
+        client.prepareResponse(endTxnResponse(Errors.NONE));
+
+        try (var producer = new KafkaProducer<String, String>(
+            new ProducerConfig(properties),
+            new StringSerializer(),
+            new StringSerializer(),
+            metadata,
+            client,
+            new ProducerInterceptors<>(List.of(), null),
+            apiVersions,
+            time
+        )) {
+            producer.initTransactions();
+            producer.beginTransaction();
+            producer.sendOffsetsToTransaction(
+                Map.of(tp, new OffsetAndMetadata(5L)),
+                new ConsumerGroupMetadata(groupId)
+            );
+            producer.commitTransaction();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("removal")
+    public void testSendOffsetsToTransactionTriggersMetadataRefreshThenNegotiatesV6() {
+        var topic = "topic";
+        var topicId = Uuid.randomUuid();
+        var tp = new TopicPartition(topic, 0);
+        var groupId = "group";
+
+        var properties = new Properties();
+        properties.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "some.id");
+        properties.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 10000);
+        properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9000");
+        properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        var time = new MockTime(1);
+        var metadata = newMetadata(0, 0, Long.MAX_VALUE);
+        var client = new MockClient(time, metadata);
+        // The initial metadata snapshot contains the topic so the producer can
+        // discover the coordinator, but has no topic-id mapping yet -- the
+        // topic-id is only populated by the refresh triggered from
+        // `sendOffsetsToTransaction`.
+        client.updateMetadata(RequestTestUtils.metadataUpdateWith(1, Map.of(topic, 1)));
+        client.prepareMetadataUpdate(RequestTestUtils.metadataUpdateWithIds(
+            1,
+            Map.of(topic, 1),
+            Map.of(topic, topicId)
+        ));
+
+        var nodeApiVersions = new NodeApiVersions(
+            NodeApiVersions.create().allSupportedApiVersions().values(),
+            List.of(new ApiVersionsResponseData.SupportedFeatureKey()
+                .setName("transaction.version")
+                .setMaxVersion((short) 2)
+                .setMinVersion((short) 0)),
+            List.of(new ApiVersionsResponseData.FinalizedFeatureKey()
+                .setName("transaction.version")
+                .setMaxVersionLevel((short) 2)
+                .setMinVersionLevel((short) 2)),
+            0
+        );
+        client.setNodeApiVersions(nodeApiVersions);
+        var apiVersions = new ApiVersions();
+        apiVersions.update(NODE.idString(), nodeApiVersions);
+
+        client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, "some.id", NODE));
+        client.prepareResponse(initProducerIdResponse(1L, (short) 5, Errors.NONE));
+        client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, "some.id", NODE));
+        client.prepareResponse(request -> {
+            var txnRequest = (TxnOffsetCommitRequest) request;
+            assertEquals(groupId, txnRequest.data().groupId());
+            assertTrue(txnRequest.version() >= 6, "Expected TxnOffsetCommit at v6+ after metadata refresh, got " + txnRequest.version());
+            assertEquals(1, txnRequest.data().topics().size());
+            assertEquals(topicId, txnRequest.data().topics().get(0).topicId());
+            return true;
+        }, txnOffsetsCommitResponse(Map.of(tp, Errors.NONE)));
+        client.prepareResponse(endTxnResponse(Errors.NONE));
+
+        try (var producer = new KafkaProducer<String, String>(
+            new ProducerConfig(properties),
+            new StringSerializer(),
+            new StringSerializer(),
+            metadata,
+            client,
+            new ProducerInterceptors<>(List.of(), null),
+            apiVersions,
+            time
+        )) {
+            producer.initTransactions();
+            producer.beginTransaction();
+            // The topic is not yet user-tracked in the producer's metadata, so
+            // awaitTopicMetadata adds it, requests an update, and waits. The
+            // queued metadata refresh above supplies the topic id, and the
+            // subsequent TxnOffsetCommit negotiates v6+.
+            producer.sendOffsetsToTransaction(
+                Map.of(tp, new OffsetAndMetadata(5L)),
+                new ConsumerGroupMetadata(groupId)
+            );
+            producer.commitTransaction();
+        }
+    }
+
+    @Test
     public void testTransactionV2Produce() throws Exception {
         StringSerializer serializer = new StringSerializer();
         KafkaProducerTestContext<String> ctx = new KafkaProducerTestContext<>(testInfo, serializer);
@@ -2146,6 +2310,10 @@ public class KafkaProducerTest {
         Time time = new MockTime(tick.toMillis());
         MetadataResponse initialUpdateResponse = RequestTestUtils.metadataUpdateWith(1, singletonMap("topic", 1));
         ProducerMetadata metadata = newMetadata(0, 0, Long.MAX_VALUE);
+        // Pre-track the topic so sendOffsetsToTransaction does not trigger a
+        // metadata refresh (which would tick the mock clock and exhaust
+        // max.block.ms via auto-tick).
+        metadata.add("topic", time.milliseconds());
 
         MockClient client = new MockClient(time, metadata);
         client.updateMetadata(initialUpdateResponse);
@@ -2220,7 +2388,7 @@ public class KafkaProducerTest {
             TxnOffsetCommitRequestData data = ((TxnOffsetCommitRequest) request).data();
             return data.groupId().equals(groupId) &&
                 data.memberId().equals(memberId) &&
-                data.generationId() == generationId &&
+                data.generationIdOrMemberEpoch() == generationId &&
                 data.groupInstanceId().equals(groupInstanceId);
         }, txnOffsetsCommitResponse(Collections.singletonMap(
             new TopicPartition("topic", 0), Errors.NONE)));
@@ -2364,7 +2532,8 @@ public class KafkaProducerTest {
 
         Producer<String, String> producer = kafkaProducer(configs, new StringSerializer(), new StringSerializer(),
                 metadata, client, null, time);
-        assertThrows(TimeoutException.class, producer::initTransactions);
+        var timeoutEx1 = assertThrows(TimeoutException.class, producer::initTransactions);
+        assertTrue(timeoutEx1.getMessage().contains(INIT_TXN_TIMEOUT_MSG));
         // other transactional operations should not be allowed if we catch the error after initTransactions failed
         try {
             assertThrows(IllegalStateException.class, producer::beginTransaction);

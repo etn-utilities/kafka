@@ -23,14 +23,17 @@ import org.apache.kafka.common.errors.UnknownMemberIdException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.ListGroupsResponseData;
 import org.apache.kafka.common.message.StreamsGroupDescribeResponseData;
+import org.apache.kafka.common.message.StreamsGroupHeartbeatResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.ApiMessage;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.annotation.ApiKeyVersionsSource;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorRecord;
+import org.apache.kafka.coordinator.common.runtime.CoordinatorTimer;
 import org.apache.kafka.coordinator.common.runtime.KRaftCoordinatorMetadataImage;
 import org.apache.kafka.coordinator.common.runtime.MetadataImageBuilder;
+import org.apache.kafka.coordinator.group.CommitPartitionValidator;
 import org.apache.kafka.coordinator.group.OffsetAndMetadata;
 import org.apache.kafka.coordinator.group.OffsetExpirationCondition;
 import org.apache.kafka.coordinator.group.OffsetExpirationConditionImpl;
@@ -66,7 +69,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.kafka.coordinator.group.streams.TaskAssignmentTestUtil.mkTasks;
 import static org.apache.kafka.coordinator.group.streams.TaskAssignmentTestUtil.mkTasksPerSubtopology;
-import static org.apache.kafka.coordinator.group.streams.TaskAssignmentTestUtil.mkTasksTuple;
+import static org.apache.kafka.coordinator.group.streams.TaskAssignmentTestUtil.mkTasksPerSubtopologyWithCommonEpoch;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -76,6 +79,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class StreamsGroupTest {
@@ -223,15 +227,15 @@ public class StreamsGroupTest {
         member = new StreamsGroupMember.Builder("member")
             .setProcessId("process")
             .setAssignedTasks(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopology, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopology, 1)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopology, 2)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopology, 3))
                 )
             )
             .setTasksPendingRevocation(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(barSubtopology, 4)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(barSubtopology, 4)),
                     mkTasksPerSubtopology(mkTasks(barSubtopology, 5)),
                     mkTasksPerSubtopology(mkTasks(barSubtopology, 6))
                 )
@@ -259,15 +263,15 @@ public class StreamsGroupTest {
         member = new StreamsGroupMember.Builder(member)
             .setProcessId("process1")
             .setAssignedTasks(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopology, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopology, 1)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopology, 2)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopology, 3))
                 )
             )
             .setTasksPendingRevocation(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(barSubtopology, 4)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(barSubtopology, 4)),
                     mkTasksPerSubtopology(mkTasks(barSubtopology, 5)),
                     mkTasksPerSubtopology(mkTasks(barSubtopology, 6))
                 )
@@ -302,16 +306,10 @@ public class StreamsGroupTest {
 
         member = new StreamsGroupMember.Builder("member")
             .setProcessId("process")
-            .setAssignedTasks(
-                new TasksTuple(
-                    Map.of(),
-                    Map.of(),
-                    Map.of()
-                )
-            )
+            .setAssignedTasks(TasksTupleWithEpochs.EMPTY)
             .setTasksPendingRevocation(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopologyId, 1)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 2)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 3))
                 )
@@ -325,13 +323,13 @@ public class StreamsGroupTest {
         member = new StreamsGroupMember.Builder(member)
             .setProcessId("process1")
             .setAssignedTasks(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopologyId, 1)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 2)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 3))
                 )
             )
-            .setTasksPendingRevocation(TasksTuple.EMPTY)
+            .setTasksPendingRevocation(TasksTupleWithEpochs.EMPTY)
             .build();
 
         streamsGroup.updateMember(member);
@@ -345,10 +343,10 @@ public class StreamsGroupTest {
         StreamsGroup streamsGroup = createStreamsGroup("foo");
 
         StreamsGroupMember m1 = new StreamsGroupMember.Builder("m1")
-            .setProcessId("process")
+            .setProcessId("process1")
             .setAssignedTasks(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopologyId, 1)),
                     Map.of(),
                     Map.of()
                 )
@@ -358,19 +356,20 @@ public class StreamsGroupTest {
         streamsGroup.updateMember(m1);
 
         StreamsGroupMember m2 = new StreamsGroupMember.Builder("m2")
-            .setProcessId("process")
+            .setProcessId("process2")
             .setAssignedTasks(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(9, mkTasks(fooSubtopologyId, 1)),
                     Map.of(),
                     Map.of()
                 )
             )
             .build();
 
-        // m2 should not be able to acquire foo-1 because the partition is
-        // still owned by another member.
-        assertThrows(IllegalStateException.class, () -> streamsGroup.updateMember(m2));
+        // We allow m2 to acquire foo-1 despite the fact that m1 has ownership because the processId is different.
+        streamsGroup.updateMember(m2);
+
+        assertEquals("process2", streamsGroup.currentActiveTaskProcessId(fooSubtopologyId, 1));
     }
 
 
@@ -380,24 +379,28 @@ public class StreamsGroupTest {
         String fooSubtopologyId = "foo-sub";
         StreamsGroup streamsGroup = createStreamsGroup("foo");
 
-        // Removing should fail because there is no epoch set.
-        assertThrows(IllegalStateException.class, () -> streamsGroup.removeTaskProcessIds(
-            mkTasksTuple(taskRole, mkTasks(fooSubtopologyId, 1)),
+        // Removing should be a no-op when there is no process id set.
+        streamsGroup.removeTaskProcessIds(
+            TaskAssignmentTestUtil.mkTasksTupleWithCommonEpoch(taskRole, 10, mkTasks(fooSubtopologyId, 1)),
             "process"
-        ));
+        );
 
         StreamsGroupMember m1 = new StreamsGroupMember.Builder("m1")
             .setProcessId("process")
-            .setAssignedTasks(mkTasksTuple(taskRole, mkTasks(fooSubtopologyId, 1)))
+            .setAssignedTasks(TaskAssignmentTestUtil.mkTasksTupleWithCommonEpoch(taskRole, 10, mkTasks(fooSubtopologyId, 1)))
             .build();
 
         streamsGroup.updateMember(m1);
 
-        // Removing should fail because the expected epoch is incorrect.
-        assertThrows(IllegalStateException.class, () -> streamsGroup.removeTaskProcessIds(
-            mkTasksTuple(taskRole, mkTasks(fooSubtopologyId, 1)),
+        // Removing with incorrect process id should do nothing. 
+        // A debug message is logged, no exception is thrown.
+        streamsGroup.removeTaskProcessIds(
+            TaskAssignmentTestUtil.mkTasksTupleWithCommonEpoch(taskRole, 9, mkTasks(fooSubtopologyId, 1)),
             "process1"
-        ));
+        );
+        if (taskRole == TaskRole.ACTIVE) {
+            assertEquals("process", streamsGroup.currentActiveTaskProcessId(fooSubtopologyId, 1));
+        }
     }
 
     @Test
@@ -406,24 +409,25 @@ public class StreamsGroupTest {
         StreamsGroup streamsGroup = createStreamsGroup("foo");
 
         streamsGroup.addTaskProcessId(
-            new TasksTuple(
-                mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 1)),
+            new TasksTupleWithEpochs(
+                mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopologyId, 1)),
                 mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 2)),
                 mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 3))
             ),
             "process"
         );
 
-        // Changing the epoch should fail because the owner of the partition
-        // should remove it first.
-        assertThrows(IllegalStateException.class, () -> streamsGroup.addTaskProcessId(
-            new TasksTuple(
-                mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 1)),
+        // We allow replacing with a different process id.
+        streamsGroup.addTaskProcessId(
+            new TasksTupleWithEpochs(
+                mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopologyId, 1)),
                 mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 2)),
                 mkTasksPerSubtopology(mkTasks(fooSubtopologyId, 3))
             ),
-            "process"
-        ));
+            "process2"
+        );
+
+        assertEquals("process2", streamsGroup.currentActiveTaskProcessId(fooSubtopologyId, 1));
     }
 
     @Test
@@ -438,15 +442,15 @@ public class StreamsGroupTest {
         member = new StreamsGroupMember.Builder("member")
             .setProcessId("process")
             .setAssignedTasks(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(fooSubtopology, 1)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(fooSubtopology, 1)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopology, 2)),
                     mkTasksPerSubtopology(mkTasks(fooSubtopology, 3))
                 )
             )
             .setTasksPendingRevocation(
-                new TasksTuple(
-                    mkTasksPerSubtopology(mkTasks(barSubtopology, 4)),
+                new TasksTupleWithEpochs(
+                    mkTasksPerSubtopologyWithCommonEpoch(10, mkTasks(barSubtopology, 4)),
                     mkTasksPerSubtopology(mkTasks(barSubtopology, 5)),
                     mkTasksPerSubtopology(mkTasks(barSubtopology, 6))
                 )
@@ -479,18 +483,51 @@ public class StreamsGroupTest {
     }
 
     @Test
+    public void testTopologyDescriptionPluginEpochs() {
+        StreamsGroup group = createStreamsGroup("foo");
+
+        // KIP-1331: both fields default to -1, meaning "no topology description ever stored / failed".
+        assertEquals(-1, group.storedDescriptionTopologyEpoch());
+        assertEquals(-1, group.failedDescriptionTopologyEpoch());
+
+        group.setStoredDescriptionTopologyEpoch(7);
+        group.setFailedDescriptionTopologyEpoch(5);
+        assertEquals(7, group.storedDescriptionTopologyEpoch());
+        assertEquals(5, group.failedDescriptionTopologyEpoch());
+
+        group.setStoredDescriptionTopologyEpoch(-1);
+        group.setFailedDescriptionTopologyEpoch(-1);
+        assertEquals(-1, group.storedDescriptionTopologyEpoch());
+        assertEquals(-1, group.failedDescriptionTopologyEpoch());
+    }
+
+    @Test
+    public void testCurrentTopologyEpochReflectsLatestTopology() {
+        StreamsGroup group = createStreamsGroup("foo");
+
+        // No topology yet → -1.
+        assertEquals(-1, group.currentTopologyEpoch());
+
+        group.setTopology(new StreamsTopology(3, Map.of()));
+        assertEquals(3, group.currentTopologyEpoch());
+
+        group.setTopology(new StreamsTopology(4, Map.of()));
+        assertEquals(4, group.currentTopologyEpoch());
+    }
+
+    @Test
     public void testGroupState() {
         StreamsGroup streamsGroup = createStreamsGroup("foo");
         assertEquals(StreamsGroupState.EMPTY, streamsGroup.state());
 
         StreamsGroupMember member1 = new StreamsGroupMember.Builder("member1")
             .setState(MemberState.STABLE)
-            .setMemberEpoch(1)
+            .setMemberEpoch(2)
             .setPreviousMemberEpoch(0)
             .build();
 
         streamsGroup.updateMember(member1);
-        streamsGroup.setGroupEpoch(1);
+        streamsGroup.setGroupEpoch(2);
 
         assertEquals(MemberState.STABLE, member1.state());
         assertEquals(StreamsGroup.StreamsGroupState.NOT_READY, streamsGroup.state());
@@ -504,24 +541,24 @@ public class StreamsGroupTest {
 
         StreamsGroupMember member2 = new StreamsGroupMember.Builder("member2")
             .setState(MemberState.STABLE)
-            .setMemberEpoch(1)
+            .setMemberEpoch(2)
             .setPreviousMemberEpoch(0)
             .build();
 
         streamsGroup.updateMember(member2);
-        streamsGroup.setGroupEpoch(2);
+        streamsGroup.setGroupEpoch(3);
 
         assertEquals(MemberState.STABLE, member2.state());
         assertEquals(StreamsGroup.StreamsGroupState.ASSIGNING, streamsGroup.state());
 
-        streamsGroup.setTargetAssignmentEpoch(2);
+        streamsGroup.setTargetAssignmentMetadata(3, 12345L);
 
         assertEquals(StreamsGroup.StreamsGroupState.RECONCILING, streamsGroup.state());
 
         member1 = new StreamsGroupMember.Builder(member1)
             .setState(MemberState.STABLE)
-            .setMemberEpoch(2)
-            .setPreviousMemberEpoch(1)
+            .setMemberEpoch(3)
+            .setPreviousMemberEpoch(2)
             .build();
 
         streamsGroup.updateMember(member1);
@@ -532,8 +569,8 @@ public class StreamsGroupTest {
         // Member 2 is not stable so the group stays in reconciling state.
         member2 = new StreamsGroupMember.Builder(member2)
             .setState(MemberState.UNREVOKED_TASKS)
-            .setMemberEpoch(2)
-            .setPreviousMemberEpoch(1)
+            .setMemberEpoch(3)
+            .setPreviousMemberEpoch(2)
             .build();
 
         streamsGroup.updateMember(member2);
@@ -543,8 +580,8 @@ public class StreamsGroupTest {
 
         member2 = new StreamsGroupMember.Builder(member2)
             .setState(MemberState.STABLE)
-            .setMemberEpoch(2)
-            .setPreviousMemberEpoch(1)
+            .setMemberEpoch(3)
+            .setPreviousMemberEpoch(2)
             .build();
 
         streamsGroup.updateMember(member2);
@@ -563,8 +600,8 @@ public class StreamsGroupTest {
         MockTime time = new MockTime();
         StreamsGroup group = createStreamsGroup("group-foo");
 
-        // Group epoch starts at 0.
-        assertEquals(0, group.groupEpoch());
+        // Group epoch starts at 1.
+        assertEquals(1, group.groupEpoch());
 
         // The refresh time deadline should be empty when the group is created or loaded.
         assertTrue(group.hasMetadataExpired(time.milliseconds()));
@@ -666,7 +703,7 @@ public class StreamsGroupTest {
         assertThrows(UnknownMemberIdException.class, () ->
             group.validateOffsetCommit("", null, -1, isTransactional, version));
 
-        // The member epoch is stale.
+        // The member epoch is stale (newer than current).
         if (version >= 9) {
             assertThrows(StaleMemberEpochException.class, () ->
                 group.validateOffsetCommit("new-protocol-member-id", "", 10, isTransactional, version));
@@ -675,13 +712,115 @@ public class StreamsGroupTest {
                 group.validateOffsetCommit("new-protocol-member-id", "", 10, isTransactional, version));
         }
 
-        // This should succeed.
+        // This should succeed (matching member epoch).
         if (version >= 9) {
             group.validateOffsetCommit("new-protocol-member-id", "", 0, isTransactional, version);
         } else {
             assertThrows(UnsupportedVersionException.class, () ->
                 group.validateOffsetCommit("new-protocol-member-id", "", 0, isTransactional, version));
         }
+    }
+
+    @Test
+    public void testValidateOffsetCommitWithOlderEpoch() {
+        StreamsGroup group = createStreamsGroup("group-foo");
+        
+        group.setTopology(new StreamsTopology(1, Map.of("0", new StreamsGroupTopologyValue.Subtopology()
+            .setSubtopologyId("0")
+            .setSourceTopics(List.of("input-topic")))));
+        
+        group.updateMember(new StreamsGroupMember.Builder("member-1")
+            .setMemberEpoch(2)
+            .setAssignedTasks(new TasksTupleWithEpochs(
+                Map.of("0", Map.of(0, 2, 1, 1)),
+                Map.of(), Map.of()))
+            .build());
+        
+        CommitPartitionValidator validator = group.validateOffsetCommit(
+            "member-1", "", 1, false, ApiKeys.OFFSET_COMMIT.latestVersion());
+        
+        // Received epoch (1) < assignment epoch (2) should throw
+        assertThrows(StaleMemberEpochException.class, () ->
+            validator.validate("input-topic", Uuid.ZERO_UUID, 0));
+    }
+
+    @Test
+    public void testValidateOffsetCommitWithOlderEpochMissingTopology() {
+        StreamsGroup group = createStreamsGroup("group-foo");
+        
+        group.updateMember(new StreamsGroupMember.Builder("member-1")
+            .setMemberEpoch(2)
+            .build());
+        
+        // Topology is retrieved when creating validator, so exception is thrown here
+        assertThrows(StaleMemberEpochException.class, () ->
+            group.validateOffsetCommit("member-1", "", 1, false, ApiKeys.OFFSET_COMMIT.latestVersion()));
+    }
+
+    @Test
+    public void testValidateOffsetCommitWithOlderEpochMissingSubtopology() {
+        StreamsGroup group = createStreamsGroup("group-foo");
+        
+        group.setTopology(new StreamsTopology(1, Map.of("0", new StreamsGroupTopologyValue.Subtopology()
+            .setSubtopologyId("0")
+            .setSourceTopics(List.of("input-topic")))));
+        
+        group.updateMember(new StreamsGroupMember.Builder("member-1")
+            .setMemberEpoch(2)
+            .build());
+        
+        CommitPartitionValidator validator = group.validateOffsetCommit(
+            "member-1", "", 1, false, ApiKeys.OFFSET_COMMIT.latestVersion());
+        
+        assertThrows(StaleMemberEpochException.class, () ->
+            validator.validate("unknown-topic", Uuid.ZERO_UUID, 0));
+    }
+
+    @Test
+    public void testValidateOffsetCommitWithOlderEpochUnassignedPartition() {
+        StreamsGroup group = createStreamsGroup("group-foo");
+        
+        group.setTopology(new StreamsTopology(1, Map.of("0", new StreamsGroupTopologyValue.Subtopology()
+            .setSubtopologyId("0")
+            .setSourceTopics(List.of("input-topic")))));
+        
+        group.updateMember(new StreamsGroupMember.Builder("member-1")
+            .setMemberEpoch(2)
+            .setAssignedTasks(new TasksTupleWithEpochs(
+                Map.of("0", Map.of(0, 1)),
+                Map.of(), Map.of()))
+            .setTasksPendingRevocation(TasksTupleWithEpochs.EMPTY)
+            .build());
+        
+        CommitPartitionValidator validator = group.validateOffsetCommit(
+            "member-1", "", 1, false, ApiKeys.OFFSET_COMMIT.latestVersion());
+
+        // Partition 1 not assigned should throw
+        assertThrows(StaleMemberEpochException.class, () ->
+            validator.validate("input-topic", Uuid.ZERO_UUID, 1));
+    }
+
+    @Test
+    public void testValidateOffsetCommitWithOlderEpochValidAssignment() {
+        StreamsGroup group = createStreamsGroup("group-foo");
+        
+        group.setTopology(new StreamsTopology(1, Map.of("0", new StreamsGroupTopologyValue.Subtopology()
+            .setSubtopologyId("0")
+            .setSourceTopics(List.of("input-topic")))));
+        
+        group.updateMember(new StreamsGroupMember.Builder("member-1")
+            .setMemberEpoch(5)
+            .setAssignedTasks(new TasksTupleWithEpochs(
+                Map.of("0", Map.of(0, 2, 1, 2)),
+                Map.of(), Map.of()))
+            .build());
+        
+        CommitPartitionValidator validator = group.validateOffsetCommit(
+            "member-1", "", 2, false, ApiKeys.OFFSET_COMMIT.latestVersion());
+        
+        // Received epoch 2 == assignment epoch 2 should succeed
+        validator.validate("input-topic", Uuid.ZERO_UUID, 0);
+        validator.validate("input-topic", Uuid.ZERO_UUID, 1);
     }
 
     @Test
@@ -696,7 +835,7 @@ public class StreamsGroupTest {
         group.setTopology(new StreamsTopology(1, Map.of()));
         group.setValidatedTopologyEpoch(1);
         group.setConfiguredTopology(new ConfiguredTopology(1, 0, Optional.of(new TreeMap<>()), Map.of(), Optional.empty()));
-        group.setTargetAssignmentEpoch(1);
+        group.setTargetAssignmentMetadata(1, 12345L);
         group.updateMember(new StreamsGroupMember.Builder("member1")
             .setMemberEpoch(1)
             .build());
@@ -750,7 +889,7 @@ public class StreamsGroupTest {
         assertDoesNotThrow(streamsGroup::validateDeleteGroup);
 
         StreamsGroupMember member1 = new StreamsGroupMember.Builder("member1")
-            .setMemberEpoch(1)
+            .setMemberEpoch(2)
             .setPreviousMemberEpoch(0)
             .setState(MemberState.STABLE)
             .build();
@@ -766,12 +905,12 @@ public class StreamsGroupTest {
         assertEquals(StreamsGroup.StreamsGroupState.RECONCILING, streamsGroup.state());
         assertThrows(GroupNotEmptyException.class, streamsGroup::validateDeleteGroup);
 
-        streamsGroup.setGroupEpoch(1);
+        streamsGroup.setGroupEpoch(2);
 
         assertEquals(StreamsGroup.StreamsGroupState.ASSIGNING, streamsGroup.state());
         assertThrows(GroupNotEmptyException.class, streamsGroup::validateDeleteGroup);
 
-        streamsGroup.setTargetAssignmentEpoch(1);
+        streamsGroup.setTargetAssignmentMetadata(2, 12345L);
 
         assertEquals(StreamsGroup.StreamsGroupState.STABLE, streamsGroup.state());
         assertThrows(GroupNotEmptyException.class, streamsGroup::validateDeleteGroup);
@@ -808,7 +947,7 @@ public class StreamsGroupTest {
         group.setTopology(new StreamsTopology(1, Map.of()));
         group.setConfiguredTopology(new ConfiguredTopology(1, 0, Optional.of(new TreeMap<>()), Map.of(), Optional.empty()));
         group.setValidatedTopologyEpoch(1);
-        group.setTargetAssignmentEpoch(1);
+        group.setTargetAssignmentMetadata(1, 12345L);
         group.updateMember(new StreamsGroupMember.Builder("member1")
             .setMemberEpoch(1)
             .setPreviousMemberEpoch(0)
@@ -822,8 +961,8 @@ public class StreamsGroupTest {
             .setProcessId("process1")
             .setUserEndpoint(new StreamsGroupMemberMetadataValue.Endpoint().setHost("host1").setPort(9092))
             .setClientTags(Map.of("tag1", "value1"))
-            .setAssignedTasks(new TasksTuple(Map.of(), Map.of(), Map.of()))
-            .setTasksPendingRevocation(new TasksTuple(Map.of(), Map.of(), Map.of()))
+            .setAssignedTasks(TasksTupleWithEpochs.EMPTY)
+            .setTasksPendingRevocation(TasksTupleWithEpochs.EMPTY)
             .build());
         group.updateMember(new StreamsGroupMember.Builder("member2")
             .setMemberEpoch(1)
@@ -838,8 +977,8 @@ public class StreamsGroupTest {
             .setProcessId("process2")
             .setUserEndpoint(new StreamsGroupMemberMetadataValue.Endpoint().setHost("host2").setPort(9092))
             .setClientTags(Map.of("tag2", "value2"))
-            .setAssignedTasks(new TasksTuple(Map.of(), Map.of(), Map.of()))
-            .setTasksPendingRevocation(new TasksTuple(Map.of(), Map.of(), Map.of()))
+            .setAssignedTasks(TasksTupleWithEpochs.EMPTY)
+            .setTasksPendingRevocation(TasksTupleWithEpochs.EMPTY)
             .build());
         snapshotRegistry.idempotentCreateSnapshot(1);
 
@@ -1033,7 +1172,7 @@ public class StreamsGroupTest {
 
         group.setGroupEpoch(2);
         group.setTopology(new StreamsTopology(2, subtopologies));
-        group.setTargetAssignmentEpoch(2);
+        group.setTargetAssignmentMetadata(2, 12345L);
         group.updateMember(new StreamsGroupMember.Builder("member1")
             .setMemberEpoch(2)
             .setPreviousMemberEpoch(1)
@@ -1047,8 +1186,8 @@ public class StreamsGroupTest {
             .setProcessId("process1")
             .setUserEndpoint(new StreamsGroupMemberMetadataValue.Endpoint().setHost("host1").setPort(9092))
             .setClientTags(Map.of("tag1", "value1"))
-            .setAssignedTasks(new TasksTuple(Map.of(), Map.of(), Map.of()))
-            .setTasksPendingRevocation(new TasksTuple(Map.of(), Map.of(), Map.of()))
+            .setAssignedTasks(TasksTupleWithEpochs.EMPTY)
+            .setTasksPendingRevocation(TasksTupleWithEpochs.EMPTY)
             .build());
         snapshotRegistry.idempotentCreateSnapshot(1);
 
@@ -1092,7 +1231,7 @@ public class StreamsGroupTest {
         group.setGroupEpoch(3);
         group.setTopology(new StreamsTopology(2, subtopologies));
         group.setConfiguredTopology(new ConfiguredTopology(3, 0, Optional.of(new TreeMap<>()), Map.of(), Optional.empty()));
-        group.setTargetAssignmentEpoch(3);
+        group.setTargetAssignmentMetadata(3, 12345L);
         snapshotRegistry.idempotentCreateSnapshot(1);
 
         StreamsGroupDescribeResponseData.DescribedGroup describedGroup = group.asDescribedGroup(1);
@@ -1119,7 +1258,7 @@ public class StreamsGroupTest {
         group.setGroupEpoch(4);
         group.setTopology(new StreamsTopology(4, subtopologies));
         // No ConfiguredTopology set, so should fallback to StreamsTopology
-        group.setTargetAssignmentEpoch(4);
+        group.setTargetAssignmentMetadata(4, 12345L);
         snapshotRegistry.idempotentCreateSnapshot(1);
 
         StreamsGroupDescribeResponseData.DescribedGroup describedGroup = group.asDescribedGroup(1);
@@ -1130,5 +1269,110 @@ public class StreamsGroupTest {
         assertEquals(1, describedGroup.topology().subtopologies().size());
         assertEquals("sub-1", describedGroup.topology().subtopologies().get(0).subtopologyId());
         assertEquals(List.of("fallback-topic"), describedGroup.topology().subtopologies().get(0).sourceTopics());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testCancelTimers() {
+        StreamsGroup streamsGroup = createStreamsGroup("test-group");
+        CoordinatorTimer<CoordinatorRecord> timer = mock(CoordinatorTimer.class);
+
+        streamsGroup.cancelTimers(timer);
+
+        verify(timer).cancel("initial-rebalance-timeout-test-group");
+    }
+
+    // Endpoint-to-partitions cache tests
+
+    @Test
+    public void testGetCachedEndpointToPartitionsReturnsEmptyWhenNoCache() {
+        StreamsGroup streamsGroup = createStreamsGroup("test-group");
+
+        Optional<StreamsGroupHeartbeatResponseData.EndpointToPartitions> cached =
+            streamsGroup.cachedEndpointToPartitions("member-1");
+
+        assertTrue(cached.isEmpty());
+    }
+
+    @Test
+    public void testCacheEndpointToPartitionsAndRetrieve() {
+        StreamsGroup streamsGroup = createStreamsGroup("test-group");
+        StreamsGroupHeartbeatResponseData.EndpointToPartitions endpointToPartitions =
+            new StreamsGroupHeartbeatResponseData.EndpointToPartitions();
+        endpointToPartitions.setUserEndpoint(
+            new StreamsGroupHeartbeatResponseData.Endpoint().setHost("localhost").setPort(9092)
+        );
+
+        streamsGroup.cacheEndpointToPartitions("member-1", endpointToPartitions);
+        Optional<StreamsGroupHeartbeatResponseData.EndpointToPartitions> cached =
+            streamsGroup.cachedEndpointToPartitions("member-1");
+
+        assertTrue(cached.isPresent());
+        assertEquals(endpointToPartitions, cached.get());
+    }
+
+    @Test
+    public void testUpdateMemberInvalidatesCache() {
+        StreamsGroup streamsGroup = createStreamsGroup("test-group");
+        StreamsGroupHeartbeatResponseData.EndpointToPartitions endpointToPartitions =
+            new StreamsGroupHeartbeatResponseData.EndpointToPartitions();
+
+        // Create initial member
+        StreamsGroupMember member = StreamsGroupMember.Builder.withDefaults("member-1")
+            .setProcessId("process-1")
+            .build();
+        streamsGroup.updateMember(member);
+
+        // Cache endpoint info
+        streamsGroup.cacheEndpointToPartitions("member-1", endpointToPartitions);
+
+        // Update member
+        StreamsGroupMember updatedMember = StreamsGroupMember.Builder.withDefaults("member-1")
+            .setProcessId("process-1")
+            .build();
+        streamsGroup.updateMember(updatedMember);
+
+        // Cache should be invalidated
+        assertTrue(streamsGroup.cachedEndpointToPartitions("member-1").isEmpty());
+    }
+
+    @Test
+    public void testRemoveMemberRemovesCacheEntry() {
+        StreamsGroup streamsGroup = createStreamsGroup("test-group");
+        StreamsGroupHeartbeatResponseData.EndpointToPartitions endpointToPartitions =
+            new StreamsGroupHeartbeatResponseData.EndpointToPartitions();
+
+        // Create member
+        StreamsGroupMember member = StreamsGroupMember.Builder.withDefaults("member-1")
+            .setProcessId("process-1")
+            .build();
+        streamsGroup.updateMember(member);
+
+        // Cache endpoint info
+        streamsGroup.cacheEndpointToPartitions("member-1", endpointToPartitions);
+
+        // Remove member
+        streamsGroup.removeMember("member-1");
+
+        // Cache should be cleared for that member
+        assertTrue(streamsGroup.cachedEndpointToPartitions("member-1").isEmpty());
+    }
+
+    @Test
+    public void testSetConfiguredTopologyClearsCache() {
+        StreamsGroup streamsGroup = createStreamsGroup("test-group");
+        StreamsGroupHeartbeatResponseData.EndpointToPartitions endpointToPartitions =
+            new StreamsGroupHeartbeatResponseData.EndpointToPartitions();
+
+        // Cache some entries
+        streamsGroup.cacheEndpointToPartitions("member-1", endpointToPartitions);
+        streamsGroup.cacheEndpointToPartitions("member-2", endpointToPartitions);
+
+        // Set configured topology (even null should clear cache)
+        streamsGroup.setConfiguredTopology(null);
+
+        // All cache entries should be cleared
+        assertTrue(streamsGroup.cachedEndpointToPartitions("member-1").isEmpty());
+        assertTrue(streamsGroup.cachedEndpointToPartitions("member-2").isEmpty());
     }
 }

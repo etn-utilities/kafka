@@ -19,7 +19,6 @@
 package kafka.server
 
 import java.net.InetSocketAddress
-import java.time.Duration
 import java.util.Properties
 import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
 import javax.security.auth.login.LoginContext
@@ -35,7 +34,8 @@ import org.apache.kafka.common.network._
 import org.apache.kafka.common.security.{JaasContext, TestSecurityConfig}
 import org.apache.kafka.common.security.auth.{Login, SecurityProtocol}
 import org.apache.kafka.common.security.kerberos.KerberosLogin
-import org.apache.kafka.common.utils.{LogContext, MockTime}
+import org.apache.kafka.common.utils.MockTime
+import org.apache.kafka.common.utils.internals.LogContext
 import org.apache.kafka.network.SocketServerConfigs
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, BeforeEach, Test, TestInfo}
@@ -185,7 +185,12 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
     consumer.assign(java.util.List.of(tp))
 
     val startMs = System.currentTimeMillis()
-    assertThrows(classOf[SaslAuthenticationException], () => consumer.poll(Duration.ofMillis(50)))
+    TestUtils.pollUntilException(
+      consumer,
+      t => t.isInstanceOf[SaslAuthenticationException],
+      "Consumer.poll() did not trigger a SaslAuthenticationException within timeout",
+      pollTimeoutMs = 50
+    )
     val endMs = System.currentTimeMillis()
     require(endMs - startMs < failedAuthenticationDelayMs, "Failed authentication must not be delayed on the client")
     consumer.close()

@@ -27,6 +27,7 @@ import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.metrics.JmxReporter;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.connect.connector.policy.AllowlistConnectorClientConfigOverridePolicy;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.runtime.isolation.PluginDiscoveryMode;
 import org.apache.kafka.connect.runtime.rest.RestServerConfig;
@@ -127,15 +128,24 @@ public class WorkerConfig extends AbstractConfig {
 
     public static final String PLUGIN_PATH_CONFIG = "plugin.path";
     protected static final String PLUGIN_PATH_DOC = "List of paths separated by commas (,) that "
-            + "contain plugins (connectors, converters, transformations). The list should consist"
-            + " of top level directories that include any combination of: \n"
-            + "a) directories immediately containing jars with plugins and their dependencies\n"
-            + "b) uber-jars with plugins and their dependencies\n"
-            + "c) directories immediately containing the package directory structure of classes of "
-            + "plugins and their dependencies\n"
-            + "Note: symlinks will be followed to discover dependencies or plugins.\n"
+            + "contain plugins (connectors, converters, transformations). A path may be a plugin "
+            + "archive (JAR or ZIP), or a directory containing plugins. When the path is a directory, "
+            + "each direct child directory or archive is loaded separately and may be: \n"
+            + "a) a directory containing JARs or ZIPs with plugins and their dependencies\n"
+            + "b) an uber-jar with plugins and their dependencies\n"
+            + "c) a directory containing the package directory structure of classes of plugins and "
+            + "their dependencies\n"
+            + "Each direct child directory is scanned recursively, so archives, classes and dependencies "
+            + "may be located in nested subdirectories. Multiple plugins placed under the same direct "
+            + "child directory share the same class loader. For class loading isolation, place each "
+            + "plugin and its dependencies in its own direct child directory under a path listed in "
+            + "plugin.path. Symlinks will be followed to discover dependencies or plugins.\n"
             + "Examples: plugin.path=/usr/local/share/java,/usr/local/share/kafka/plugins,"
             + "/opt/connectors\n"
+            + "With plugin.path=/opt/connectors, place each plugin in its own direct child "
+            + "of /opt/connectors. A plugin can be a directory such as /opt/connectors/my-plugin/ "
+            + "(dependencies may be nested, e.g. /opt/connectors/my-plugin/lib/dep.jar), or "
+            + "an uber-jar such as /opt/connectors/another-plugin.jar.\n"
             + "Do not use config provider variables in this property, since the raw path is used "
             + "by the worker's scanner before config providers are initialized and used to "
             + "replace variables.";
@@ -158,9 +168,10 @@ public class WorkerConfig extends AbstractConfig {
     public static final String CONNECTOR_CLIENT_POLICY_CLASS_CONFIG = "connector.client.config.override.policy";
     public static final String CONNECTOR_CLIENT_POLICY_CLASS_DOC =
         "Class name or alias of implementation of <code>ConnectorClientConfigOverridePolicy</code>. Defines what client configurations can be "
-        + "overridden by the connector. The default implementation is <code>All</code>, meaning connector configurations can override all client properties. "
-        + "The other possible policies in the framework include <code>None</code> to disallow connectors from overriding client properties, "
-        + "and <code>Principal</code> to allow connectors to override only client principals.";
+        + "overridden by the connector. The default policy is <code>All</code>, meaning connector configurations can override all client properties. "
+        + "The other possible policies in the framework include <code>Allowlist</code> to specify allowed configurations via "
+        + "<code>" + AllowlistConnectorClientConfigOverridePolicy.ALLOWLIST_CONFIG + "</code>, <code>None</code> to disallow connectors from overriding "
+        + "client properties, and <code>Principal</code> (now deprecated) to allow connectors to override only client principals.";
     public static final String CONNECTOR_CLIENT_POLICY_CLASS_DEFAULT = "All";
 
 

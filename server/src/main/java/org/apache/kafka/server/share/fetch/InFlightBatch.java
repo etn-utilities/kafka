@@ -23,6 +23,8 @@ import org.apache.kafka.server.util.timer.Timer;
 import java.util.NavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
+import static org.apache.kafka.server.share.fetch.InFlightState.EMPTY_MEMBER_ID;
+
 /**
  * The InFlightBatch maintains the in-memory state of the fetched records i.e. in-flight records.
  * <p>
@@ -164,11 +166,12 @@ public class InFlightBatch {
      * @param ops      The behavior on the delivery count.
      * @param maxDeliveryCount The maximum delivery count for the records.
      * @param newMemberId The new member id for the records.
+     * @param dlqSupportEnabled Boolean indicating if share group DLQ support is enabled.
      * @return {@code InFlightState} if update succeeds, null otherwise. Returning state helps update chaining.
      * @throws IllegalStateException if the offset state is maintained and the batch state is not available.
      */
-    public InFlightState tryUpdateBatchState(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount, String newMemberId) {
-        return inFlightState().tryUpdateState(newState, ops, maxDeliveryCount, newMemberId);
+    public InFlightState tryUpdateBatchState(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount, String newMemberId, boolean dlqSupportEnabled) {
+        return inFlightState().tryUpdateState(newState, ops, maxDeliveryCount, newMemberId, dlqSupportEnabled);
     }
 
     /**
@@ -179,13 +182,40 @@ public class InFlightBatch {
      * @param ops      The behavior on the delivery count.
      * @param maxDeliveryCount The maximum delivery count for the records.
      * @param newMemberId The new member id for the records.
+     * @param dlqSupportEnabled Boolean indicating if share group DLQ support is enabled.
      * @return {@code InFlightState} if update succeeds, null otherwise. Returning state helps update chaining.
      * @throws IllegalStateException if the offset state is maintained and the batch state is not available.
      */
     public InFlightState startBatchStateTransition(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount,
-        String newMemberId
+        String newMemberId, boolean dlqSupportEnabled
     ) {
-        return inFlightState().startStateTransition(newState, ops, maxDeliveryCount, newMemberId);
+        return inFlightState().startStateTransition(newState, ops, maxDeliveryCount, newMemberId, dlqSupportEnabled);
+    }
+
+    /**
+     * This method initializes the offset states in two ranges:
+     * [firstOffset to targetOffset]: initialize each offset using the current batch state and schedule
+     * an acquisition lock timeout task for each offset.
+     * (targetOffset to lastOffset]: initialize each offset to {@link RecordState#AVAILABLE}
+     * and do not schedule any timer task for these offsets.
+     *
+     * @param targetOffset The target offset up to which the offset states are initialized using the current batch state.
+     * @param delayMs The delay in milliseconds for the acquisition lock timeout task.
+     */
+    public void maybeInitializeOffsetStateUpdate(long targetOffset, int delayMs) {
+        if (offsetState == null) {
+            offsetState = new ConcurrentSkipListMap<>();
+            for (long offset = this.firstOffset; offset <= this.lastOffset; offset++) {
+                if (offset <= targetOffset) {
+                    AcquisitionLockTimerTask timerTask = acquisitionLockTimerTask(batchState.memberId(), offset, offset, delayMs);
+                    offsetState.put(offset, new InFlightState(batchState.state(), batchState.deliveryCount(), batchState.memberId(), timerTask));
+                    timer.add(timerTask);
+                } else {
+                    offsetState.put(offset, new InFlightState(RecordState.AVAILABLE, batchState.deliveryCount() - 1, EMPTY_MEMBER_ID));
+                }
+            }
+            batchState = null;
+        }
     }
 
     /**

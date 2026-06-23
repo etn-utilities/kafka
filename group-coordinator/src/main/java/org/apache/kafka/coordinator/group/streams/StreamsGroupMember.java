@@ -20,8 +20,11 @@ import org.apache.kafka.common.message.StreamsGroupDescribeResponseData;
 import org.apache.kafka.coordinator.group.generated.StreamsGroupCurrentMemberAssignmentValue;
 import org.apache.kafka.coordinator.group.generated.StreamsGroupMemberMetadataValue;
 
+import org.slf4j.Logger;
+
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -49,8 +52,8 @@ import java.util.stream.Collectors;
  * @param userEndpoint                  The user endpoint exposed for Interactive Queries by the Streams client that
  *                                      contains the member.
  * @param clientTags                    Tags of the client of the member used for rack-aware assignment.
- * @param assignedTasks                 Tasks assigned to the member.
- * @param tasksPendingRevocation        Tasks owned by the member pending revocation.
+ * @param assignedTasks                 Tasks assigned to the member, including assignment epochs for active tasks.
+ * @param tasksPendingRevocation        Tasks owned by the member pending revocation, including assignment epochs for active tasks.
  */
 @SuppressWarnings("checkstyle:JavaNCSS")
 public record StreamsGroupMember(String memberId,
@@ -66,8 +69,8 @@ public record StreamsGroupMember(String memberId,
                                  String processId,
                                  Optional<StreamsGroupMemberMetadataValue.Endpoint> userEndpoint,
                                  Map<String, String> clientTags,
-                                 TasksTuple assignedTasks,
-                                 TasksTuple tasksPendingRevocation) {
+                                 TasksTupleWithEpochs assignedTasks,
+                                 TasksTupleWithEpochs tasksPendingRevocation) {
 
     public StreamsGroupMember {
         Objects.requireNonNull(memberId, "memberId cannot be null");
@@ -94,17 +97,21 @@ public record StreamsGroupMember(String memberId,
         private String processId = null;
         private Optional<StreamsGroupMemberMetadataValue.Endpoint> userEndpoint = null;
         private Map<String, String> clientTags = null;
-        private TasksTuple assignedTasks = null;
-        private TasksTuple tasksPendingRevocation = null;
+        private TasksTupleWithEpochs assignedTasks = null;
+        private TasksTupleWithEpochs tasksPendingRevocation = null;
 
         public Builder(String memberId) {
             this.memberId = Objects.requireNonNull(memberId, "memberId cannot be null");
         }
 
         public Builder(StreamsGroupMember member) {
+            this(Objects.requireNonNull(member, "member cannot be null"), member.memberId);
+        }
+
+        public Builder(StreamsGroupMember member, String memberId) {
             Objects.requireNonNull(member, "member cannot be null");
 
-            this.memberId = member.memberId;
+            this.memberId = memberId;
             this.memberEpoch = member.memberEpoch;
             this.previousMemberEpoch = member.previousMemberEpoch;
             this.instanceId = member.instanceId;
@@ -223,12 +230,12 @@ public record StreamsGroupMember(String memberId,
             return this;
         }
 
-        public Builder setAssignedTasks(TasksTuple assignedTasks) {
+        public Builder setAssignedTasks(TasksTupleWithEpochs assignedTasks) {
             this.assignedTasks = assignedTasks;
             return this;
         }
 
-        public Builder setTasksPendingRevocation(TasksTuple tasksPendingRevocation) {
+        public Builder setTasksPendingRevocation(TasksTupleWithEpochs tasksPendingRevocation) {
             this.tasksPendingRevocation = tasksPendingRevocation;
             return this;
         }
@@ -249,33 +256,31 @@ public record StreamsGroupMember(String memberId,
             return this;
         }
 
-        public Builder updateWith(StreamsGroupCurrentMemberAssignmentValue record) {
+        public Builder updateWith(Logger log, String groupId, StreamsGroupCurrentMemberAssignmentValue record) {
             setMemberEpoch(record.memberEpoch());
             setPreviousMemberEpoch(record.previousMemberEpoch());
             setState(MemberState.fromValue(record.state()));
             setAssignedTasks(
-                new TasksTuple(
-                    assignmentFromTaskIds(record.activeTasks()),
-                    assignmentFromTaskIds(record.standbyTasks()),
-                    assignmentFromTaskIds(record.warmupTasks())
+                TasksTupleWithEpochs.fromCurrentAssignmentRecord(
+                    log,
+                    groupId,
+                    record.activeTasks(),
+                    record.standbyTasks(),
+                    record.warmupTasks(),
+                    record.memberEpoch()
                 )
             );
             setTasksPendingRevocation(
-                new TasksTuple(
-                    assignmentFromTaskIds(record.activeTasksPendingRevocation()),
-                    assignmentFromTaskIds(record.standbyTasksPendingRevocation()),
-                    assignmentFromTaskIds(record.warmupTasksPendingRevocation())
+                TasksTupleWithEpochs.fromCurrentAssignmentRecord(
+                    log,
+                    groupId,
+                    record.activeTasksPendingRevocation(),
+                    record.standbyTasksPendingRevocation(),
+                    record.warmupTasksPendingRevocation(),
+                    record.memberEpoch()
                 )
             );
             return this;
-        }
-
-        private static Map<String, Set<Integer>> assignmentFromTaskIds(
-            List<StreamsGroupCurrentMemberAssignmentValue.TaskIds> topicPartitionsList
-        ) {
-            return topicPartitionsList.stream().collect(Collectors.toMap(
-                StreamsGroupCurrentMemberAssignmentValue.TaskIds::subtopologyId,
-                taskIds -> Set.copyOf(taskIds.partitions())));
         }
 
         public static Builder withDefaults(String memberId) {
@@ -284,12 +289,15 @@ public record StreamsGroupMember(String memberId,
                 .setTopologyEpoch(-1)
                 .setInstanceId(null)
                 .setRackId(null)
+                .setClientId("")
+                .setClientHost("")
                 .setProcessId("")
-                .setClientTags(Collections.emptyMap())
+                .setClientTags(Map.of())
                 .setState(MemberState.STABLE)
                 .setMemberEpoch(0)
-                .setAssignedTasks(TasksTuple.EMPTY)
-                .setTasksPendingRevocation(TasksTuple.EMPTY)
+                .setPreviousMemberEpoch(0)
+                .setAssignedTasks(TasksTupleWithEpochs.EMPTY)
+                .setTasksPendingRevocation(TasksTupleWithEpochs.EMPTY)
                 .setUserEndpoint(null);
         }
 
@@ -311,6 +319,37 @@ public record StreamsGroupMember(String memberId,
                 assignedTasks,
                 tasksPendingRevocation
             );
+        }
+
+        /**
+         * Resets the assignment epochs to 0 for all assigned active tasks.
+         * Used when a static member leaves, so that the rejoining member's
+         * active tasks will be assigned from epoch 0 to the new member ID.
+         * All commits using the old member ID will be fenced.
+         */
+        public Builder resetAssignedTasksEpochsToZero() {
+            if (this.assignedTasks.isEmpty()) {
+                return this;
+            }
+
+            if (this.assignedTasks.activeTasksWithEpochs().isEmpty()) {
+                return this;
+            }
+
+            Map<String, Map<Integer, Integer>> resetActiveTasks = new HashMap<>();
+            for (Map.Entry<String, Map<Integer, Integer>> entry : this.assignedTasks.activeTasksWithEpochs().entrySet()) {
+                Map<Integer, Integer> resetActiveTaskEpochs = new HashMap<>();
+                for (Integer partitionId : entry.getValue().keySet()) {
+                    resetActiveTaskEpochs.put(partitionId, 0);
+                }
+                resetActiveTasks.put(entry.getKey(), resetActiveTaskEpochs);
+            }
+            this.assignedTasks = new TasksTupleWithEpochs(
+                resetActiveTasks,
+                this.assignedTasks.standbyTasks(),
+                this.assignedTasks.warmupTasks()
+            );
+            return this;
         }
     }
 
@@ -344,7 +383,7 @@ public record StreamsGroupMember(String memberId,
             .setMemberId(memberId)
             .setAssignment(
                 new StreamsGroupDescribeResponseData.Assignment()
-                    .setActiveTasks(taskIdsFromMap(assignedTasks.activeTasks()))
+                    .setActiveTasks(taskIdsFromMapWithEpochs(assignedTasks.activeTasksWithEpochs()))
                     .setStandbyTasks(taskIdsFromMap(assignedTasks.standbyTasks()))
                     .setWarmupTasks(taskIdsFromMap(assignedTasks.warmupTasks())))
             .setTargetAssignment(describedTargetAssignment)
@@ -374,6 +413,16 @@ public record StreamsGroupMember(String memberId,
             taskIds.add(new StreamsGroupDescribeResponseData.TaskIds()
                 .setSubtopologyId(subtopologyId)
                 .setPartitions(tasks.get(subtopologyId).stream().sorted().toList()));
+        });
+        return taskIds;
+    }
+
+    private static List<StreamsGroupDescribeResponseData.TaskIds> taskIdsFromMapWithEpochs(Map<String, Map<Integer, Integer>> tasksWithEpochs) {
+        List<StreamsGroupDescribeResponseData.TaskIds> taskIds = new ArrayList<>();
+        tasksWithEpochs.keySet().stream().sorted().forEach(subtopologyId -> {
+            taskIds.add(new StreamsGroupDescribeResponseData.TaskIds()
+                .setSubtopologyId(subtopologyId)
+                .setPartitions(tasksWithEpochs.get(subtopologyId).keySet().stream().sorted().toList()));
         });
         return taskIds;
     }

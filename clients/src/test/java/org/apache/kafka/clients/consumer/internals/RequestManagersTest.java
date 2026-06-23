@@ -21,8 +21,8 @@ import org.apache.kafka.clients.GroupRebalanceConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.internals.events.BackgroundEventHandler;
 import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 import org.junit.jupiter.api.Test;
 
@@ -50,23 +50,29 @@ public class RequestManagersTest {
             config,
             GroupRebalanceConfig.ProtocolType.CONSUMER
         );
+        LogContext logContext = new LogContext();
+        MockTime time = new MockTime();
+        ConsumerMetadata metadata = mock(ConsumerMetadata.class);
+        SubscriptionState subscriptions = mock(SubscriptionState.class);
+        ApiVersions apiVersions = mock(ApiVersions.class);
         final RequestManagers requestManagers = RequestManagers.supplier(
-            new MockTime(),
-            new LogContext(),
+            time,
+            logContext,
             mock(BackgroundEventHandler.class),
-            mock(ConsumerMetadata.class),
-            mock(SubscriptionState.class),
+            metadata,
+            subscriptions,
             mock(FetchBuffer.class),
             config,
             groupRebalanceConfig,
-            mock(ApiVersions.class),
+            apiVersions,
             mock(FetchMetricsManager.class),
             () -> mock(NetworkClientDelegate.class),
             Optional.empty(),
             new Metrics(),
             mock(OffsetCommitCallbackInvoker.class),
             listener,
-            Optional.empty()
+            Optional.empty(),
+            new PositionsValidator(logContext, time, subscriptions, metadata)
         ).get();
         assertTrue(requestManagers.consumerMembershipManager.isPresent());
         assertTrue(requestManagers.streamsMembershipManager.isEmpty());
@@ -90,23 +96,29 @@ public class RequestManagersTest {
             config,
             GroupRebalanceConfig.ProtocolType.CONSUMER
         );
+        LogContext logContext = new LogContext();
+        MockTime time = new MockTime();
+        ConsumerMetadata metadata = mock(ConsumerMetadata.class);
+        SubscriptionState subscriptions = mock(SubscriptionState.class);
+        ApiVersions apiVersions = mock(ApiVersions.class);
         final RequestManagers requestManagers = RequestManagers.supplier(
-            new MockTime(),
-            new LogContext(),
+            time,
+            logContext,
             mock(BackgroundEventHandler.class),
-            mock(ConsumerMetadata.class),
-            mock(SubscriptionState.class),
+            metadata,
+            subscriptions,
             mock(FetchBuffer.class),
             config,
             groupRebalanceConfig,
-            mock(ApiVersions.class),
+            apiVersions,
             mock(FetchMetricsManager.class),
             () -> mock(NetworkClientDelegate.class),
             Optional.empty(),
             new Metrics(),
             mock(OffsetCommitCallbackInvoker.class),
             listener,
-            Optional.of(new StreamsRebalanceData(UUID.randomUUID(), Optional.empty(), Map.of(), Map.of()))
+            Optional.of(new StreamsRebalanceData(UUID.randomUUID(), Optional.empty(), Optional.empty(), Map.of(), Map.of(), Map::of)),
+            new PositionsValidator(logContext, time, subscriptions, metadata)
         ).get();
         assertTrue(requestManagers.streamsMembershipManager.isPresent());
         assertTrue(requestManagers.streamsGroupHeartbeatRequestManager.isPresent());

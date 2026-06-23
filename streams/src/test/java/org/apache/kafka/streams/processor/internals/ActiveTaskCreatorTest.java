@@ -23,8 +23,8 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.KafkaMetric;
 import org.apache.kafka.common.metrics.Measurable;
 import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.TopologyConfig;
 import org.apache.kafka.streams.errors.StreamsException;
@@ -68,11 +68,9 @@ public class ActiveTaskCreatorTest {
     private InternalTopologyBuilder builder;
     @Mock
     private StateDirectory stateDirectory;
-    @Mock
-    private ChangelogReader changeLogReader;
 
     private final MockClientSupplier mockClientSupplier = new MockClientSupplier();
-    private final StreamsMetricsImpl streamsMetrics = new StreamsMetricsImpl(new Metrics(), "clientId", "processId", new MockTime());
+    private final StreamsMetricsImpl streamsMetrics = new StreamsMetricsImpl(new Metrics(), "clientId", new MockTime());
     private final Map<String, Object> properties = mkMap(
         mkEntry(StreamsConfig.APPLICATION_ID_CONFIG, "appId"),
         mkEntry(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:1234")
@@ -259,9 +257,7 @@ public class ActiveTaskCreatorTest {
         when(builder.buildSubtopology(0)).thenReturn(topology);
         when(topology.sinkTopics()).thenReturn(emptySet());
         when(stateDirectory.getOrCreateDirectoryForTask(task00)).thenReturn(mock(File.class));
-        when(stateDirectory.checkpointFileFor(task00)).thenReturn(mock(File.class));
         when(stateDirectory.getOrCreateDirectoryForTask(task01)).thenReturn(mock(File.class));
-        when(stateDirectory.checkpointFileFor(task01)).thenReturn(mock(File.class));
         when(topology.source("topic")).thenReturn(sourceNode);
         when(sourceNode.timestampExtractor()).thenReturn(mock(TimestampExtractor.class));
         when(topology.sources()).thenReturn(Collections.singleton(sourceNode));
@@ -272,7 +268,6 @@ public class ActiveTaskCreatorTest {
             config,
             streamsMetrics,
             stateDirectory,
-            changeLogReader,
             new ThreadCache(new LogContext(), 0L, streamsMetrics),
             new MockTime(),
             mockClientSupplier,
@@ -280,7 +275,6 @@ public class ActiveTaskCreatorTest {
             0,
             uuid,
             new LogContext(),
-            false,
             false);
 
         assertThat(

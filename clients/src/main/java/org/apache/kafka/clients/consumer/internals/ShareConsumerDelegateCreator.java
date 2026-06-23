@@ -22,10 +22,8 @@ import org.apache.kafka.clients.consumer.KafkaShareConsumer;
 import org.apache.kafka.clients.consumer.ShareConsumer;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
-
-import org.slf4j.Logger;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 /**
  * {@code ShareConsumerDelegateCreator} implements a quasi-factory pattern to allow the caller to remain unaware of the
@@ -43,9 +41,6 @@ public class ShareConsumerDelegateCreator {
                                                      final Deserializer<K> keyDeserializer,
                                                      final Deserializer<V> valueDeserializer) {
         try {
-            LogContext logContext = new LogContext();
-            Logger log = logContext.logger(getClass());
-            log.warn("Share groups and KafkaShareConsumer are part of a preview feature introduced by KIP-932, and are not recommended for use in production.");
             return new ShareConsumerImpl<>(config, keyDeserializer, valueDeserializer);
         } catch (KafkaException e) {
             throw e;
@@ -65,8 +60,6 @@ public class ShareConsumerDelegateCreator {
                                                      final SubscriptionState subscriptions,
                                                      final ShareConsumerMetadata metadata) {
         try {
-            Logger log = logContext.logger(getClass());
-            log.warn("Share groups and KafkaShareConsumer are part of a preview feature introduced by KIP-932, and are not recommended for use in production.");
             return new ShareConsumerImpl<>(
                     logContext,
                     clientId,

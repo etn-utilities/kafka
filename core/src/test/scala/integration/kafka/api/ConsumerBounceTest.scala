@@ -13,6 +13,7 @@
 
 package kafka.api
 
+import java.util
 import java.util.concurrent._
 import java.util.Properties
 import kafka.server.KafkaConfig
@@ -21,7 +22,8 @@ import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.GroupMaxSizeReachedException
 import org.apache.kafka.coordinator.group.GroupCoordinatorConfig
-import org.apache.kafka.server.config.{KRaftConfigs, ReplicationConfigs, ServerLogConfigs}
+import org.apache.kafka.raft.KRaftConfigs
+import org.apache.kafka.server.config.{ReplicationConfigs, ServerLogConfigs}
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, Disabled, TestInfo}
 import org.junit.jupiter.params.ParameterizedTest
@@ -137,7 +139,7 @@ class ConsumerBounceTest extends AbstractConsumerTest with Logging {
   }
 
   private def createTopicPartitions(topic: String, numPartitions: Int, replicationFactor: Int,
-                                    topicConfig: Properties = new Properties): Set[TopicPartition] = {
+                                    topicConfig: util.Map[String, String] = util.Map.of()): Set[TopicPartition] = {
     createTopic(topic, numPartitions = numPartitions, replicationFactor = replicationFactor, topicConfig = topicConfig)
     Range(0, numPartitions).map(part => new TopicPartition(topic, part)).toSet
   }

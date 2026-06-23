@@ -30,8 +30,8 @@ import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.LongSerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.streams.errors.LogAndContinueExceptionHandler;
 import org.apache.kafka.streams.errors.LogAndFailExceptionHandler;
 import org.apache.kafka.streams.errors.StreamsException;
@@ -72,7 +72,7 @@ public class RecordQueueTest {
 
     private final Metrics metrics = new Metrics();
     private final StreamsMetricsImpl streamsMetrics =
-        new StreamsMetricsImpl(metrics, "mock", "processId", new MockTime());
+        new StreamsMetricsImpl(metrics, "mock", new MockTime());
 
     final InternalMockProcessorContext<Integer, Integer> context = new InternalMockProcessorContext<>(
         StateSerdes.withBuiltinTypes("anyName", Bytes.class, Bytes.class),

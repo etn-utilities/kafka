@@ -34,11 +34,11 @@ import org.apache.kafka.common.message.JoinGroupResponseData;
 import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.common.utils.annotation.ApiKeyVersionsSource;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.coordinator.common.runtime.KRaftCoordinatorMetadataImage;
 import org.apache.kafka.coordinator.common.runtime.MetadataImageBuilder;
 import org.apache.kafka.coordinator.group.OffsetAndMetadata;
@@ -68,6 +68,7 @@ import java.util.concurrent.ExecutionException;
 
 import static org.apache.kafka.coordinator.group.AssignmentTestUtil.mkAssignment;
 import static org.apache.kafka.coordinator.group.AssignmentTestUtil.mkTopicAssignment;
+import static org.apache.kafka.coordinator.group.Utils.toAssignmentWithEpochs;
 import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.COMPLETING_REBALANCE;
 import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.DEAD;
 import static org.apache.kafka.coordinator.group.classic.ClassicGroupState.EMPTY;
@@ -1010,7 +1011,7 @@ public class ClassicGroupTest {
             new JoinGroupRequestProtocolCollection(List.of(
                 new JoinGroupRequestProtocol()
                     .setName("roundrobin")
-                    .setMetadata(new byte[0])).iterator())
+                    .setMetadata(new byte[0])))
         ));
 
         group.transitionTo(PREPARING_REBALANCE);
@@ -1264,6 +1265,37 @@ public class ClassicGroupTest {
     }
 
     @Test
+    public void testComputeSubscribedTopicsHandlesMalformedMemberMetadata() {
+        ClassicGroup group = new ClassicGroup(logContext, "groupId", EMPTY, Time.SYSTEM);
+
+        JoinGroupRequestProtocolCollection protocols = new JoinGroupRequestProtocolCollection();
+        protocols.add(new JoinGroupRequestProtocol()
+            .setName("range")
+            .setMetadata(new byte[]{
+                0, 1,                                              // version (int16) = 1
+                (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF // topics array length (int32) = -1
+            }));
+
+        ClassicGroupMember poisonMember = new ClassicGroupMember(
+            "poisonMember",
+            Optional.empty(),
+            clientId,
+            clientHost,
+            rebalanceTimeoutMs,
+            sessionTimeoutMs,
+            "consumer",
+            protocols
+        );
+
+        group.add(poisonMember);
+        group.transitionTo(PREPARING_REBALANCE);
+        group.initNextGeneration();
+
+        // RuntimeException should not propagate; falls through to Optional.empty().
+        assertEquals(Optional.empty(), group.computeSubscribedTopics());
+    }
+
+    @Test
     public void testIsInStates() {
         ClassicGroup group = new ClassicGroup(new LogContext(), "groupId", EMPTY, Time.SYSTEM);
         assertTrue(group.isInStates(Set.of("empty"), 0));
@@ -1380,11 +1412,12 @@ public class ClassicGroupTest {
             .build();
 
         ConsumerGroup consumerGroup = new ConsumerGroup(
+            logContext,
             new SnapshotRegistry(logContext),
             groupId
         );
         consumerGroup.setGroupEpoch(10);
-        consumerGroup.setTargetAssignmentEpoch(10);
+        consumerGroup.setTargetAssignmentMetadata(10, time.milliseconds());
 
         consumerGroup.updateTargetAssignment(memberId1, new Assignment(mkAssignment(
             mkTopicAssignment(fooTopicId, 0)
@@ -1417,8 +1450,8 @@ public class ClassicGroupTest {
                 new ConsumerGroupMemberMetadataValue.ClassicMemberMetadata()
                     .setSessionTimeoutMs(5000)
                     .setSupportedProtocols(protocols1))
-            .setAssignedPartitions(mkAssignment(
-                mkTopicAssignment(fooTopicId, 0)))
+            .setAssignedPartitions(toAssignmentWithEpochs(mkAssignment(
+                mkTopicAssignment(fooTopicId, 0)), 10))
             .build();
         consumerGroup.updateMember(member1);
 
@@ -1432,8 +1465,8 @@ public class ClassicGroupTest {
             .setSubscribedTopicNames(List.of(fooTopicName))
             .setServerAssignorName("range")
             .setRebalanceTimeoutMs(45000)
-            .setAssignedPartitions(mkAssignment(
-                mkTopicAssignment(fooTopicId, 1)))
+            .setAssignedPartitions(toAssignmentWithEpochs(mkAssignment(
+                mkTopicAssignment(fooTopicId, 1)), 10))
             .build();
         consumerGroup.updateMember(member2);
 
@@ -1449,8 +1482,8 @@ public class ClassicGroupTest {
                 new ConsumerGroupMemberMetadataValue.ClassicMemberMetadata()
                     .setSessionTimeoutMs(5000)
                     .setSupportedProtocols(protocols2))
-            .setAssignedPartitions(mkAssignment(
-                mkTopicAssignment(fooTopicId, 1)))
+            .setAssignedPartitions(toAssignmentWithEpochs(mkAssignment(
+                mkTopicAssignment(fooTopicId, 1)), 10))
             .build();
 
         ClassicGroup classicGroup = ClassicGroup.fromConsumerGroup(
@@ -1486,7 +1519,7 @@ public class ClassicGroupTest {
                     new JoinGroupRequestData.JoinGroupRequestProtocol()
                         .setName(protocols1.get(0).name())
                         .setMetadata(protocols1.get(0).metadata())
-                ).iterator()),
+                )),
                 Utils.toArray(ConsumerProtocol.serializeAssignment(new ConsumerPartitionAssignor.Assignment(
                     List.of(new TopicPartition(fooTopicName, 0))
                 )))
@@ -1505,7 +1538,7 @@ public class ClassicGroupTest {
                     new JoinGroupRequestData.JoinGroupRequestProtocol()
                         .setName(protocols2.get(0).name())
                         .setMetadata(protocols2.get(0).metadata())
-                ).iterator()),
+                )),
                 Utils.toArray(ConsumerProtocol.serializeAssignment(new ConsumerPartitionAssignor.Assignment(
                     List.of(new TopicPartition(fooTopicName, 1))
                 )))
@@ -1532,11 +1565,12 @@ public class ClassicGroupTest {
             .build();
 
         ConsumerGroup consumerGroup = new ConsumerGroup(
+            logContext,
             new SnapshotRegistry(logContext),
             groupId
         );
         consumerGroup.setGroupEpoch(10);
-        consumerGroup.setTargetAssignmentEpoch(10);
+        consumerGroup.setTargetAssignmentMetadata(10, time.milliseconds());
         consumerGroup.updateTargetAssignment(memberId1, new Assignment(mkAssignment(
             mkTopicAssignment(fooTopicId, 0)
         )));
@@ -1563,8 +1597,8 @@ public class ClassicGroupTest {
                 new ConsumerGroupMemberMetadataValue.ClassicMemberMetadata()
                     .setSessionTimeoutMs(5000)
                     .setSupportedProtocols(protocols1))
-            .setAssignedPartitions(mkAssignment(
-                mkTopicAssignment(fooTopicId, 0)))
+            .setAssignedPartitions(toAssignmentWithEpochs(mkAssignment(
+                mkTopicAssignment(fooTopicId, 0)), 10))
             .build();
         consumerGroup.updateMember(member1);
 
@@ -1578,8 +1612,8 @@ public class ClassicGroupTest {
             .setSubscribedTopicNames(List.of(fooTopicName))
             .setServerAssignorName("range")
             .setRebalanceTimeoutMs(45000)
-            .setAssignedPartitions(mkAssignment(
-                mkTopicAssignment(fooTopicId, 1)))
+            .setAssignedPartitions(toAssignmentWithEpochs(mkAssignment(
+                mkTopicAssignment(fooTopicId, 1)), 10))
             .build();
         consumerGroup.updateMember(member2);
 
@@ -1616,7 +1650,7 @@ public class ClassicGroupTest {
                     new JoinGroupRequestData.JoinGroupRequestProtocol()
                         .setName(protocols1.get(0).name())
                         .setMetadata(protocols1.get(0).metadata())
-                ).iterator()),
+                )),
                 Utils.toArray(ConsumerProtocol.serializeAssignment(new ConsumerPartitionAssignor.Assignment(
                     List.of(new TopicPartition(fooTopicName, 0))
                 )))

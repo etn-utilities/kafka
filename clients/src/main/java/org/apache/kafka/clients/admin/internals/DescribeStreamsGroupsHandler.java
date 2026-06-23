@@ -30,7 +30,7 @@ import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.FindCoordinatorRequest.CoordinatorType;
 import org.apache.kafka.common.requests.StreamsGroupDescribeRequest;
 import org.apache.kafka.common.requests.StreamsGroupDescribeResponse;
-import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 import org.slf4j.Logger;
 
@@ -92,7 +92,7 @@ public class DescribeStreamsGroupsHandler extends AdminApiHandler.Batched<Coordi
         StreamsGroupDescribeRequestData data = new StreamsGroupDescribeRequestData()
             .setGroupIds(groupIds)
             .setIncludeAuthorizedOperations(includeAuthorizedOperations);
-        return new StreamsGroupDescribeRequest.Builder(data, true);
+        return new StreamsGroupDescribeRequest.Builder(data);
     }
 
     @Override

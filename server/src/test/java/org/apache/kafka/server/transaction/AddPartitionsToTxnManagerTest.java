@@ -39,8 +39,8 @@ import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.metadata.LeaderAndIsr;
 import org.apache.kafka.metadata.MetadataCache;
+import org.apache.kafka.raft.KRaftConfigs;
 import org.apache.kafka.server.config.AbstractKafkaConfig;
-import org.apache.kafka.server.config.KRaftConfigs;
 import org.apache.kafka.server.metrics.KafkaMetricsGroup;
 import org.apache.kafka.server.transaction.AddPartitionsToTxnManager.AppendCallback;
 import org.apache.kafka.server.transaction.AddPartitionsToTxnManager.TransactionSupportedOperation;
@@ -183,7 +183,7 @@ public class AddPartitionsToTxnManagerTest {
                 assertEquals(time.milliseconds(), requestAndHandler.creationTimeMs);
                 var transactions = new AddPartitionsToTxnTransactionCollection(
                         List.of(transactionData(transactionalId3, producerId3, (short) 0, !isAddPartition),
-                                transactionData(transactionalId1, producerId1, (short) 1, !isAddPartition)).iterator());
+                                transactionData(transactionalId1, producerId1, (short) 1, !isAddPartition)));
                 assertEquals(
                         AddPartitionsToTxnRequest.Builder.forBroker(transactions).data,
                         ((AddPartitionsToTxnRequest.Builder) requestAndHandler.request).data);
@@ -361,7 +361,7 @@ public class AddPartitionsToTxnManagerTest {
                 transactionalId2, preConvertedTransaction2Errors);
         var mixedErrorsAddPartitionsResponse = new AddPartitionsToTxnResponse(new AddPartitionsToTxnResponseData()
                 .setResultsByTransaction(new AddPartitionsToTxnResultCollection(
-                        List.of(transaction1ErrorResponse, transaction2ErrorResponse).iterator())));
+                        List.of(transaction1ErrorResponse, transaction2ErrorResponse))));
         var mixedErrorsResponse = clientResponse(mixedErrorsAddPartitionsResponse, null, null, false);
 
         addTransactionsToVerify.run();
@@ -381,7 +381,7 @@ public class AddPartitionsToTxnManagerTest {
                 AddPartitionsToTxnResponse.resultForTransaction(transactionalId2, preConvertedTransactionAbortableErrorsTxn2);
         var mixedErrorsAddPartitionsResponseAbortableError = new AddPartitionsToTxnResponse(new AddPartitionsToTxnResponseData()
                 .setResultsByTransaction(new AddPartitionsToTxnResultCollection(
-                        List.of(transactionAbortableErrorResponseTxn1, transactionAbortableErrorResponseTxn2).iterator())));
+                        List.of(transactionAbortableErrorResponseTxn1, transactionAbortableErrorResponseTxn2))));
         var mixedAbortableErrorsResponse =
                 clientResponse(mixedErrorsAddPartitionsResponseAbortableError, null, null, false);
 
@@ -515,7 +515,7 @@ public class AddPartitionsToTxnManagerTest {
                 .setTopics(new AddPartitionsToTxnTopicCollection(
                         List.of(new AddPartitionsToTxnTopic()
                                 .setName(topic)
-                                .setPartitions(List.of(1, 2, 3))).iterator()));
+                                .setPartitions(List.of(1, 2, 3)))));
     }
 
     private void receiveResponse(ClientResponse response) {
@@ -533,7 +533,7 @@ public class AddPartitionsToTxnManagerTest {
         assertEquals(
                 AddPartitionsToTxnRequest.Builder.forBroker(
                         new AddPartitionsToTxnTransactionCollection(
-                                List.of(transactionData(transactionalId, producerId, (short) 0, verifyOnly)).iterator())
+                                List.of(transactionData(transactionalId, producerId, (short) 0, verifyOnly)))
                 ).data,
                 ((AddPartitionsToTxnRequest.Builder) requestAndHandler.request).data);
     }

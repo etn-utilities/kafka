@@ -39,7 +39,7 @@
     <disallow pkg="kafka" />
 
     <!-- anyone can use public classes -->
-    <allow pkg="org.apache.kafka.common" />
+    <allow pkg="org.apache.kafka.common" exact-match="true" />
     <allow pkg="org.apache.kafka.common.security" />
     <allow pkg="org.apache.kafka.common.serialization" />
     <allow pkg="org.apache.kafka.common.utils" />
@@ -58,9 +58,12 @@
     </subpackage>
 
     <subpackage name="metadata">
+        <allow pkg="org.apache.kafka.common.config" />
         <allow pkg="org.apache.kafka.common.message" />
-        <allow pkg="org.apache.kafka.server.common" />
         <allow pkg="org.apache.kafka.common.protocol" />
+        <allow pkg="org.apache.kafka.metadata.properties" />
+        <allow pkg="org.apache.kafka.server.common" />
+        <allow pkg="org.apache.kafka.test" />
     </subpackage>
 
     <subpackage name="security">
@@ -68,8 +71,6 @@
         <allow pkg="org.apache.kafka.common.config" />
         <allow pkg="org.apache.kafka.common.config.types" />
         <allow pkg="org.apache.kafka.server.util" />
-        <allow pkg="javax.crypto" />
-        <allow pkg="javax.crypto.spec" />
     </subpackage>
 
     <subpackage name="server">
@@ -112,6 +113,11 @@
             <allow pkg="org.apache.kafka.server.util" />
             <allow pkg="org.apache.kafka.test" />
           </subpackage>
+          <subpackage name="dlq">
+            <allow pkg="org.apache.kafka.clients" />
+            <allow pkg="org.apache.kafka.server.util" />
+            <allow pkg="org.apache.kafka.test" />
+          </subpackage>
         </subpackage>
 
         <subpackage name="util">
@@ -128,6 +134,10 @@
 
             <allow class="org.apache.kafka.server.util.TopicFilter.IncludeList" />
             <allow class="org.apache.kafka.test.TestUtils" />
+            <allow class="org.apache.kafka.server.authorizer.Authorizer" />
+            <!-- ServerTestUtils uses yammer metrics for test cleanup -->
+            <allow pkg="org.apache.kafka.server.metrics" />
+            <allow pkg="com.yammer.metrics.core" />
             <subpackage name="timer">
                 <allow class="org.apache.kafka.server.util.MockTime" />
                 <allow class="org.apache.kafka.server.util.ShutdownableThread" />
@@ -141,6 +151,10 @@
 
     <subpackage name="admin">
         <allow pkg="org.apache.kafka.server.common" />
+    </subpackage>
+
+    <subpackage name="config">
+        <allow class="org.apache.kafka.common.config.AbstractConfig" />
     </subpackage>
 
 </import-control>

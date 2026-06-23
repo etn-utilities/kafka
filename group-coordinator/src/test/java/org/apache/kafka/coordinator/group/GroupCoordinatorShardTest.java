@@ -16,10 +16,11 @@
  */
 package org.apache.kafka.coordinator.group;
 
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.apache.kafka.common.errors.GroupNotEmptyException;
+import org.apache.kafka.common.errors.InvalidRequestException;
+import org.apache.kafka.common.errors.UnknownMemberIdException;
 import org.apache.kafka.common.message.ConsumerGroupHeartbeatRequestData;
 import org.apache.kafka.common.message.ConsumerGroupHeartbeatResponseData;
 import org.apache.kafka.common.message.DeleteGroupsResponseData;
@@ -28,26 +29,31 @@ import org.apache.kafka.common.message.DeleteShareGroupOffsetsResponseData;
 import org.apache.kafka.common.message.DeleteShareGroupStateRequestData;
 import org.apache.kafka.common.message.OffsetCommitRequestData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
+import org.apache.kafka.common.message.OffsetFetchRequestData;
+import org.apache.kafka.common.message.OffsetFetchResponseData;
 import org.apache.kafka.common.message.ShareGroupHeartbeatRequestData;
 import org.apache.kafka.common.message.ShareGroupHeartbeatResponseData;
+import org.apache.kafka.common.message.StreamsGroupDescribeResponseData;
 import org.apache.kafka.common.message.StreamsGroupHeartbeatRequestData;
 import org.apache.kafka.common.message.StreamsGroupHeartbeatResponseData;
 import org.apache.kafka.common.message.TxnOffsetCommitRequestData;
 import org.apache.kafka.common.message.TxnOffsetCommitResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.record.RecordBatch;
+import org.apache.kafka.common.record.internal.RecordBatch;
 import org.apache.kafka.common.requests.RequestContext;
 import org.apache.kafka.common.requests.TransactionResult;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.internals.LogContext;
+import org.apache.kafka.coordinator.common.runtime.CoordinatorMetadataDelta;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorMetadataImage;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorMetrics;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorMetricsShard;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorRecord;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorResult;
 import org.apache.kafka.coordinator.common.runtime.MockCoordinatorTimer;
+import org.apache.kafka.coordinator.group.GroupCoordinatorShard.DeletedTopic;
 import org.apache.kafka.coordinator.group.generated.ConsumerGroupCurrentMemberAssignmentKey;
 import org.apache.kafka.coordinator.group.generated.ConsumerGroupCurrentMemberAssignmentValue;
 import org.apache.kafka.coordinator.group.generated.ConsumerGroupMemberMetadataKey;
@@ -86,7 +92,9 @@ import org.apache.kafka.coordinator.group.generated.StreamsGroupTopologyKey;
 import org.apache.kafka.coordinator.group.generated.StreamsGroupTopologyValue;
 import org.apache.kafka.coordinator.group.modern.consumer.ConsumerGroup;
 import org.apache.kafka.coordinator.group.modern.share.ShareGroup;
+import org.apache.kafka.coordinator.group.streams.StreamsGroupDescribeResult;
 import org.apache.kafka.coordinator.group.streams.StreamsGroupHeartbeatResult;
+import org.apache.kafka.coordinator.group.streams.StreamsGroupMember;
 import org.apache.kafka.server.common.ApiMessageAndVersion;
 import org.apache.kafka.server.share.persister.DeleteShareGroupStateParameters;
 import org.apache.kafka.server.share.persister.GroupTopicPartitionData;
@@ -99,6 +107,7 @@ import org.apache.kafka.timeline.SnapshotRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
@@ -187,7 +196,7 @@ public class GroupCoordinatorShardTest {
         StreamsGroupHeartbeatRequestData request = new StreamsGroupHeartbeatRequestData();
         CoordinatorResult<StreamsGroupHeartbeatResult, CoordinatorRecord> result = new CoordinatorResult<>(
             List.of(),
-            new StreamsGroupHeartbeatResult(new StreamsGroupHeartbeatResponseData(), Map.of())
+            new StreamsGroupHeartbeatResult(new StreamsGroupHeartbeatResponseData(), Map.of(), -1, -1, -1)
         );
 
         when(groupMetadataManager.streamsGroupHeartbeat(
@@ -196,6 +205,67 @@ public class GroupCoordinatorShardTest {
         )).thenReturn(result);
 
         assertEquals(result, coordinator.streamsGroupHeartbeat(context, request));
+    }
+
+    @Test
+    public void testStreamsGroupDescribeDelegatesAndReturnsBundledResult() {
+        GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
+        GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
+            new LogContext(),
+            groupMetadataManager,
+            mock(OffsetMetadataManager.class),
+            Time.SYSTEM,
+            new MockCoordinatorTimer<>(Time.SYSTEM),
+            mock(GroupCoordinatorConfig.class),
+            mock(CoordinatorMetrics.class),
+            mock(CoordinatorMetricsShard.class)
+        );
+
+        StreamsGroupDescribeResult expected = new StreamsGroupDescribeResult(
+            List.of(new StreamsGroupDescribeResponseData.DescribedGroup().setGroupId("foo")),
+            Map.of("foo", 5)
+        );
+        when(groupMetadataManager.streamsGroupDescribe(List.of("foo"), 100L)).thenReturn(expected);
+
+        assertEquals(expected, coordinator.streamsGroupDescribe(List.of("foo"), 100L));
+    }
+
+    @Test
+    public void testValidateStreamsGroupMemberDelegates() {
+        GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
+        GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
+            new LogContext(),
+            groupMetadataManager,
+            mock(OffsetMetadataManager.class),
+            Time.SYSTEM,
+            new MockCoordinatorTimer<>(Time.SYSTEM),
+            mock(GroupCoordinatorConfig.class),
+            mock(CoordinatorMetrics.class),
+            mock(CoordinatorMetricsShard.class)
+        );
+
+        // Happy path: manager returns a member, shard returns void.
+        when(groupMetadataManager.validateStreamsGroupTopologyDescriptionUpdate("foo", "m1", 3, 100L))
+            .thenReturn(mock(StreamsGroupMember.class));
+        coordinator.validateStreamsGroupTopologyDescriptionUpdate("foo", "m1", 3, 100L);
+
+        // GROUP_ID_NOT_FOUND propagates.
+        when(groupMetadataManager.validateStreamsGroupTopologyDescriptionUpdate("missing", "m1", 3, 100L))
+            .thenThrow(new GroupIdNotFoundException("nope"));
+        assertThrows(GroupIdNotFoundException.class,
+            () -> coordinator.validateStreamsGroupTopologyDescriptionUpdate("missing", "m1", 3, 100L));
+
+        // UNKNOWN_MEMBER_ID propagates.
+        when(groupMetadataManager.validateStreamsGroupTopologyDescriptionUpdate("foo", "stranger", 3, 100L))
+            .thenThrow(new UnknownMemberIdException("not a member"));
+        assertThrows(UnknownMemberIdException.class,
+            () -> coordinator.validateStreamsGroupTopologyDescriptionUpdate("foo", "stranger", 3, 100L));
+
+        // Stale topology epoch propagates as INVALID_REQUEST.
+        when(groupMetadataManager.validateStreamsGroupTopologyDescriptionUpdate("foo", "m1", 2, 100L))
+            .thenThrow(new InvalidRequestException("stale epoch"));
+        assertThrows(InvalidRequestException.class,
+            () -> coordinator.validateStreamsGroupTopologyDescriptionUpdate("foo", "m1", 2, 100L));
     }
 
     @Test
@@ -306,14 +376,14 @@ public class GroupCoordinatorShardTest {
             List<CoordinatorRecord> records = invocation.getArgument(1);
             records.add(GroupCoordinatorRecordHelpers.newGroupMetadataTombstoneRecord(groupId));
             return null;
-        }).when(groupMetadataManager).createGroupTombstoneRecords(anyString(), anyList());
+        }).when(groupMetadataManager).createGroupTombstoneRecordsAndCancelTimers(anyString(), anyList());
 
         CoordinatorResult<DeleteGroupsResponseData.DeletableGroupResultCollection, CoordinatorRecord> coordinatorResult =
             coordinator.deleteGroups(context, groupIds);
 
         for (String groupId : groupIds) {
             verify(groupMetadataManager, times(1)).validateDeleteGroup(ArgumentMatchers.eq(groupId));
-            verify(groupMetadataManager, times(1)).createGroupTombstoneRecords(ArgumentMatchers.eq(groupId), anyList());
+            verify(groupMetadataManager, times(1)).createGroupTombstoneRecordsAndCancelTimers(ArgumentMatchers.eq(groupId), anyList());
             verify(offsetMetadataManager, times(1)).deleteAllOffsets(ArgumentMatchers.eq(groupId), anyList());
         }
         assertEquals(expectedResult, coordinatorResult);
@@ -372,7 +442,7 @@ public class GroupCoordinatorShardTest {
             List<CoordinatorRecord> records = invocation.getArgument(1);
             records.add(GroupCoordinatorRecordHelpers.newGroupMetadataTombstoneRecord(groupId));
             return null;
-        }).when(groupMetadataManager).createGroupTombstoneRecords(anyString(), anyList());
+        }).when(groupMetadataManager).createGroupTombstoneRecordsAndCancelTimers(anyString(), anyList());
 
         CoordinatorResult<DeleteGroupsResponseData.DeletableGroupResultCollection, CoordinatorRecord> coordinatorResult =
             coordinator.deleteGroups(context, groupIds);
@@ -380,7 +450,7 @@ public class GroupCoordinatorShardTest {
         for (String groupId : groupIds) {
             verify(groupMetadataManager, times(1)).validateDeleteGroup(eq(groupId));
             if (!groupId.equals("group-id-2")) {
-                verify(groupMetadataManager, times(1)).createGroupTombstoneRecords(eq(groupId), anyList());
+                verify(groupMetadataManager, times(1)).createGroupTombstoneRecordsAndCancelTimers(eq(groupId), anyList());
                 verify(offsetMetadataManager, times(1)).deleteAllOffsets(eq(groupId), anyList());
             }
         }
@@ -1265,12 +1335,37 @@ public class GroupCoordinatorShardTest {
 
         coordinator.onLoaded(image);
 
-        verify(groupMetadataManager, times(1)).onNewMetadataImage(
-            eq(image),
-            any()
+        verify(groupMetadataManager, times(1)).onMetadataUpdate(
+            any(), eq(image)
         );
 
         verify(groupMetadataManager, times(1)).onLoaded();
+    }
+
+    @Test
+    public void testOnMetadataUpdate() {
+        CoordinatorMetadataImage image = CoordinatorMetadataImage.EMPTY;
+        CoordinatorMetadataDelta delta = CoordinatorMetadataDelta.EMPTY;
+        GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
+        OffsetMetadataManager offsetMetadataManager = mock(OffsetMetadataManager.class);
+        CoordinatorMetrics coordinatorMetrics = mock(CoordinatorMetrics.class);
+        CoordinatorMetricsShard metricsShard = mock(CoordinatorMetricsShard.class);
+        GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
+            new LogContext(),
+            groupMetadataManager,
+            offsetMetadataManager,
+            Time.SYSTEM,
+            new MockCoordinatorTimer<>(Time.SYSTEM),
+            mock(GroupCoordinatorConfig.class),
+            coordinatorMetrics,
+            metricsShard
+        );
+
+        coordinator.onMetadataUpdate(delta, image);
+
+        verify(groupMetadataManager, times(1)).onMetadataUpdate(
+            eq(delta), eq(image)
+        );
     }
 
     @Test
@@ -1332,7 +1427,7 @@ public class GroupCoordinatorShardTest {
         GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
         OffsetMetadataManager offsetMetadataManager = mock(OffsetMetadataManager.class);
         Time mockTime = new MockTime();
-        MockCoordinatorTimer<Void, CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
+        MockCoordinatorTimer<CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
         GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
             new LogContext(),
             groupMetadataManager,
@@ -1351,7 +1446,7 @@ public class GroupCoordinatorShardTest {
 
         // Confirm that it is rescheduled after completion.
         mockTime.sleep(1000L);
-        List<MockCoordinatorTimer.ExpiredTimeout<Void, CoordinatorRecord>> tasks = timer.poll();
+        List<MockCoordinatorTimer.ExpiredTimeout<CoordinatorRecord>> tasks = timer.poll();
         assertEquals(1, tasks.size());
         assertTrue(timer.contains(GROUP_EXPIRATION_KEY));
 
@@ -1364,7 +1459,7 @@ public class GroupCoordinatorShardTest {
         GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
         OffsetMetadataManager offsetMetadataManager = mock(OffsetMetadataManager.class);
         Time mockTime = new MockTime();
-        MockCoordinatorTimer<Void, CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
+        MockCoordinatorTimer<CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
         GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
             new LogContext(),
             groupMetadataManager,
@@ -1384,8 +1479,8 @@ public class GroupCoordinatorShardTest {
 
         SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
 
-        ConsumerGroup group1 = new ConsumerGroup(snapshotRegistry, "group-id");
-        ConsumerGroup group2 = new ConsumerGroup(snapshotRegistry, "other-group-id");
+        ConsumerGroup group1 = new ConsumerGroup(new LogContext(), snapshotRegistry, "group-id");
+        ConsumerGroup group2 = new ConsumerGroup(new LogContext(), snapshotRegistry, "other-group-id");
 
         when(groupMetadataManager.groupIds()).thenReturn(Set.of("group-id", "other-group-id"));
         when(groupMetadataManager.group("group-id")).thenReturn(group1);
@@ -1424,7 +1519,7 @@ public class GroupCoordinatorShardTest {
         GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
         OffsetMetadataManager offsetMetadataManager = mock(OffsetMetadataManager.class);
         Time mockTime = new MockTime();
-        MockCoordinatorTimer<Void, CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
+        MockCoordinatorTimer<CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
         GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
             new LogContext(),
             groupMetadataManager,
@@ -1463,7 +1558,7 @@ public class GroupCoordinatorShardTest {
         CoordinatorMetrics coordinatorMetrics = mock(CoordinatorMetrics.class);
         CoordinatorMetricsShard metricsShard = mock(CoordinatorMetricsShard.class);
         MockTime time = new MockTime();
-        MockCoordinatorTimer<Void, CoordinatorRecord> timer = new MockCoordinatorTimer<>(time);
+        MockCoordinatorTimer<CoordinatorRecord> timer = new MockCoordinatorTimer<>(time);
         GroupCoordinatorConfig config = mock(GroupCoordinatorConfig.class);
         when(config.offsetsRetentionCheckIntervalMs()).thenReturn(60 * 60 * 1000L);
 
@@ -1528,7 +1623,7 @@ public class GroupCoordinatorShardTest {
     }
 
     @Test
-    public void testOnPartitionsDeleted() {
+    public void testOnTopicsDeleted() {
         GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
         OffsetMetadataManager offsetMetadataManager = mock(OffsetMetadataManager.class);
         CoordinatorMetrics coordinatorMetrics = mock(CoordinatorMetrics.class);
@@ -1544,19 +1639,18 @@ public class GroupCoordinatorShardTest {
             metricsShard
         );
 
+        Uuid fooTopicId = Uuid.randomUuid();
+        List<DeletedTopic> deletedTopics = List.of(new DeletedTopic(fooTopicId, "foo"));
+
         List<CoordinatorRecord> records = List.of(GroupCoordinatorRecordHelpers.newOffsetCommitTombstoneRecord(
             "group",
             "foo",
             0
         ));
 
-        when(offsetMetadataManager.onPartitionsDeleted(
-            List.of(new TopicPartition("foo", 0))
-        )).thenReturn(records);
+        when(offsetMetadataManager.onTopicsDeleted(deletedTopics)).thenReturn(records);
 
-        CoordinatorResult<Void, CoordinatorRecord> result = coordinator.onPartitionsDeleted(
-            List.of(new TopicPartition("foo", 0))
-        );
+        CoordinatorResult<Void, CoordinatorRecord> result = coordinator.onTopicsDeleted(deletedTopics);
 
         assertEquals(records, result.records());
         assertNull(result.response());
@@ -1567,7 +1661,7 @@ public class GroupCoordinatorShardTest {
         GroupMetadataManager groupMetadataManager = mock(GroupMetadataManager.class);
         OffsetMetadataManager offsetMetadataManager = mock(OffsetMetadataManager.class);
         Time mockTime = new MockTime();
-        MockCoordinatorTimer<Void, CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
+        MockCoordinatorTimer<CoordinatorRecord> timer = new MockCoordinatorTimer<>(mockTime);
         GroupCoordinatorShard coordinator = new GroupCoordinatorShard(
             new LogContext(),
             groupMetadataManager,
@@ -2383,5 +2477,50 @@ public class GroupCoordinatorShardTest {
 
         assertEquals(expectedResult, coordinator.completeDeleteShareGroupOffsets(groupId, topics, errorTopicResponseList));
         verify(groupMetadataManager, times(1)).completeDeleteShareGroupOffsets(any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testFetchOffsets(boolean fetchAllOffsets) {
+        var offsetMetadataManager = mock(OffsetMetadataManager.class);
+        var coordinator = new GroupCoordinatorShard(
+            new LogContext(),
+            mock(GroupMetadataManager.class),
+            offsetMetadataManager,
+            Time.SYSTEM,
+            new MockCoordinatorTimer<>(Time.SYSTEM),
+            mock(GroupCoordinatorConfig.class),
+            mock(CoordinatorMetrics.class),
+            mock(CoordinatorMetricsShard.class)
+        );
+
+        var request = new OffsetFetchRequestData.OffsetFetchRequestGroup()
+            .setGroupId("foo");
+
+        if (fetchAllOffsets) {
+            request.setTopics(null);
+        } else {
+            request.setTopics(List.of(new OffsetFetchRequestData.OffsetFetchRequestTopics()
+                .setName("foo")
+                .setPartitionIndexes(List.of(0))
+            ));
+        }
+
+        var result = new OffsetFetchResponseData.OffsetFetchResponseGroup()
+            .setGroupId("foo");
+
+        if (fetchAllOffsets) {
+            when(offsetMetadataManager.fetchAllOffsets(
+                request,
+                Long.MAX_VALUE
+            )).thenReturn(result);
+        } else {
+            when(offsetMetadataManager.fetchOffsets(
+                request,
+                Long.MAX_VALUE
+            )).thenReturn(result);
+        }
+
+        assertEquals(result, coordinator.fetchOffsets(request, Long.MAX_VALUE));
     }
 }

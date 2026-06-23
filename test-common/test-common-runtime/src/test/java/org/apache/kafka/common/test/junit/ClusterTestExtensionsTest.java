@@ -33,6 +33,7 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.Endpoint;
 import org.apache.kafka.common.TopicPartitionInfo;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.config.ConfigResource;
@@ -55,10 +56,15 @@ import org.apache.kafka.common.test.api.ClusterTests;
 import org.apache.kafka.common.test.api.Type;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.coordinator.group.GroupCoordinatorConfig;
+import org.apache.kafka.metadata.properties.MetaProperties;
+import org.apache.kafka.metadata.properties.MetaPropertiesEnsemble;
+import org.apache.kafka.metadata.properties.MetaPropertiesVersion;
 import org.apache.kafka.server.common.MetadataVersion;
 
 import org.junit.jupiter.api.Assertions;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -66,10 +72,13 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import scala.jdk.javaapi.CollectionConverters;
 
 import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
@@ -180,11 +189,29 @@ public class ClusterTestExtensionsTest {
         @ClusterTest(types = {Type.KRAFT, Type.CO_KRAFT}),
         @ClusterTest(types = {Type.KRAFT, Type.CO_KRAFT}, disksPerBroker = 2),
     })
-    public void testClusterTestWithDisksPerBroker() throws ExecutionException, InterruptedException {
+    public void testClusterTestWithDisksPerBroker() throws ExecutionException, InterruptedException, IOException {
         try (Admin admin = clusterInstance.admin()) {
             DescribeLogDirsResult result = admin.describeLogDirs(clusterInstance.brokerIds());
             result.allDescriptions().get().forEach((brokerId, logDirDescriptionMap) ->
                 assertEquals(clusterInstance.config().numDisksPerBroker(), logDirDescriptionMap.size()));
+        }
+        for (Map.Entry<Integer, KafkaBroker> entry : clusterInstance.brokers().entrySet()) {
+            int brokerId = entry.getKey();
+            KafkaBroker broker = entry.getValue();
+            List<String> logDirs = broker.config().logDirs();
+            for (String logDir : logDirs) {
+                Properties props = Utils.loadProps(new File(logDir, MetaPropertiesEnsemble.META_PROPERTIES_NAME).getAbsolutePath());
+                MetaProperties metaProps = new MetaProperties.Builder(props).build();
+
+                assertTrue(metaProps.clusterId().isPresent(), "Cluster ID missing in " + logDir);
+                assertTrue(metaProps.nodeId().isPresent(), "Node ID missing in " + logDir);
+                assertTrue(metaProps.directoryId().isPresent(), "Directory ID missing in " + logDir);
+
+                assertEquals(MetaPropertiesVersion.V1, metaProps.version(), "MetaProperties version mismatch in " + logDir);
+                assertEquals(clusterInstance.clusterId(), metaProps.clusterId().get(), "Cluster ID mismatch in " + logDir);
+                assertEquals(brokerId, metaProps.nodeId().getAsInt(), "Node ID mismatch in " + logDir);
+                assertEquals(metaProps.directoryId().get(), broker.logManager().directoryId(logDir).get(), "Directory ID mismatch in " + logDir);
+            }
         }
     }
 
@@ -208,6 +235,7 @@ public class ClusterTestExtensionsTest {
         assertEquals(supportedGroupProtocols, clusterInstance.supportedGroupProtocols());
     }
 
+    @SuppressWarnings("removal")
     @ClusterTests({
         @ClusterTest(types = {Type.KRAFT, Type.CO_KRAFT}, serverProperties = {
             @ClusterConfigProperty(key = GROUP_COORDINATOR_REBALANCE_PROTOCOLS_CONFIG, value = "classic"),
@@ -501,6 +529,35 @@ public class ClusterTestExtensionsTest {
         }
     )
     public void testSaslPlaintextWithController(ClusterInstance clusterInstance) throws CancellationException, ExecutionException, InterruptedException {
+        assertSecurityProtocol(clusterInstance, SecurityProtocol.SASL_PLAINTEXT, "Expected broker to have SASL_PLAINTEXT data-plane listener");
+        testSecurityProtocol(clusterInstance);
+    }
+
+    @ClusterTest(
+        types = {Type.KRAFT, Type.CO_KRAFT},
+        brokerSecurityProtocol = SecurityProtocol.SASL_SSL,
+        controllerSecurityProtocol = SecurityProtocol.SASL_SSL,
+        serverProperties = {
+            @ClusterConfigProperty(key = GroupCoordinatorConfig.OFFSETS_TOPIC_PARTITIONS_CONFIG, value = "1"),
+            @ClusterConfigProperty(key = GroupCoordinatorConfig.OFFSETS_TOPIC_REPLICATION_FACTOR_CONFIG, value = "1")
+        }
+    )
+    public void testSaslSslWithController(ClusterInstance clusterInstance) throws CancellationException, ExecutionException, InterruptedException {
+        assertSecurityProtocol(clusterInstance, SecurityProtocol.SASL_SSL, "Expected broker to have SASL_SSL data-plane listener");
+        testSecurityProtocol(clusterInstance);
+    }
+
+    private static void assertSecurityProtocol(ClusterInstance clusterInstance, SecurityProtocol saslPlaintext, String message) {
+        clusterInstance.aliveBrokers().values().forEach(broker -> {
+            List<Endpoint> endpoints = CollectionConverters.asJava(broker.config().dataPlaneListeners());
+            assertTrue(
+                    endpoints.stream().anyMatch(ep -> ep.securityProtocol() == saslPlaintext),
+                    message
+            );
+        });
+    }
+
+    private static void testSecurityProtocol(ClusterInstance clusterInstance) throws InterruptedException, ExecutionException {
         // default ClusterInstance#admin helper with admin credentials
         try (Admin admin = clusterInstance.admin(Map.of(), true)) {
             admin.describeAcls(AclBindingFilter.ANY).values().get();

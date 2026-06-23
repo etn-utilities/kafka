@@ -33,8 +33,8 @@ import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.requests.AssignReplicasToDirsRequest;
 import org.apache.kafka.common.requests.AssignReplicasToDirsResponse;
-import org.apache.kafka.common.utils.ExponentialBackoff;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.internals.ExponentialBackoff;
 import org.apache.kafka.image.MetadataDelta;
 import org.apache.kafka.image.MetadataImage;
 import org.apache.kafka.image.MetadataProvenance;
@@ -250,7 +250,7 @@ public class AssignmentsManagerTest {
             return queuedReplicaToDirAssignments.value();
         }
 
-        @SuppressWarnings("unchecked") // do not warn about Gauge typecast.
+        @SuppressWarnings({"unchecked", "deprecation"}) // do not warn about Gauge typecast or the deprecation.
         int deprecatedQueuedReplicaToDirAssignments() {
             Gauge<Integer> queuedReplicaToDirAssignments =
                     (Gauge<Integer>) findMetric(AssignmentsManager.DEPRECATED_QUEUED_REPLICA_TO_DIR_ASSIGNMENTS_METRIC);

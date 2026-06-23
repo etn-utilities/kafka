@@ -29,7 +29,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.test.TestUtils;
 
 import org.junit.jupiter.api.Test;
@@ -306,13 +306,22 @@ public class SubscriptionStateTest {
     }
 
     @Test
-    public void testMarkingPartitionPending() {
+    public void testMarkingPendingRevocation() {
         state.assignFromUser(Set.of(tp0));
         state.seek(tp0, 100);
         assertTrue(state.isFetchable(tp0));
+        assertFalse(state.isPaused(tp0));
         state.markPendingRevocation(Set.of(tp0));
         assertFalse(state.isFetchable(tp0));
         assertFalse(state.isPaused(tp0));
+    }
+
+    @Test
+    public void testMarkingPendingRevocationPreventsInitializingPosition() {
+        state.assignFromUser(Set.of(tp0));
+        assertTrue(state.initializingPartitions().contains(tp0));
+        state.markPendingRevocation(Set.of(tp0));
+        assertFalse(state.initializingPartitions().contains(tp0));
     }
 
     @Test

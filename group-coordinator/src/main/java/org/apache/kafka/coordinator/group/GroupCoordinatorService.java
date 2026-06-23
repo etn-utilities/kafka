@@ -24,6 +24,7 @@ import org.apache.kafka.common.errors.InvalidRequestException;
 import org.apache.kafka.common.errors.NotCoordinatorException;
 import org.apache.kafka.common.errors.StreamsInvalidTopologyException;
 import org.apache.kafka.common.errors.UnsupportedAssignorException;
+import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.internals.Plugin;
 import org.apache.kafka.common.internals.Topic;
 import org.apache.kafka.common.message.AlterShareGroupOffsetsRequestData;
@@ -59,6 +60,8 @@ import org.apache.kafka.common.message.ShareGroupHeartbeatResponseData;
 import org.apache.kafka.common.message.StreamsGroupDescribeResponseData;
 import org.apache.kafka.common.message.StreamsGroupHeartbeatRequestData;
 import org.apache.kafka.common.message.StreamsGroupHeartbeatResponseData;
+import org.apache.kafka.common.message.StreamsGroupTopologyDescriptionUpdateRequestData;
+import org.apache.kafka.common.message.StreamsGroupTopologyDescriptionUpdateResponseData;
 import org.apache.kafka.common.message.SyncGroupRequestData;
 import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.message.TxnOffsetCommitRequestData;
@@ -72,30 +75,40 @@ import org.apache.kafka.common.requests.DeleteShareGroupOffsetsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeShareGroupOffsetsRequest;
 import org.apache.kafka.common.requests.OffsetCommitRequest;
+import org.apache.kafka.common.requests.OffsetFetchRequest;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
 import org.apache.kafka.common.requests.ShareGroupDescribeRequest;
 import org.apache.kafka.common.requests.ShareGroupHeartbeatRequest;
 import org.apache.kafka.common.requests.StreamsGroupDescribeRequest;
 import org.apache.kafka.common.requests.TransactionResult;
 import org.apache.kafka.common.requests.TxnOffsetCommitRequest;
-import org.apache.kafka.common.utils.BufferSupplier;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.internals.BufferSupplier;
+import org.apache.kafka.common.utils.internals.LogContext;
+import org.apache.kafka.coordinator.common.runtime.CoordinatorBackgroundThreadPoolExecutor;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorEventProcessor;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorLoader;
-import org.apache.kafka.coordinator.common.runtime.CoordinatorMetadataDelta;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorMetadataImage;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorRecord;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorResult;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorRuntime;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorRuntimeMetrics;
 import org.apache.kafka.coordinator.common.runtime.CoordinatorShardBuilderSupplier;
+import org.apache.kafka.coordinator.common.runtime.KRaftCoordinatorMetadataDelta;
+import org.apache.kafka.coordinator.common.runtime.KRaftCoordinatorMetadataImage;
 import org.apache.kafka.coordinator.common.runtime.MultiThreadedEventProcessor;
 import org.apache.kafka.coordinator.common.runtime.PartitionWriter;
+import org.apache.kafka.coordinator.group.GroupCoordinatorShard.DeletedTopic;
 import org.apache.kafka.coordinator.group.api.assignor.ConsumerGroupPartitionAssignor;
+import org.apache.kafka.coordinator.group.api.streams.StreamsGroupTopologyDescriptionPlugin;
 import org.apache.kafka.coordinator.group.metrics.GroupCoordinatorMetrics;
 import org.apache.kafka.coordinator.group.streams.StreamsGroupHeartbeatResult;
+import org.apache.kafka.coordinator.group.streams.StreamsGroupTopologyDescriptionConverter;
+import org.apache.kafka.coordinator.group.streams.StreamsGroupTopologyDescriptionManager;
+import org.apache.kafka.image.MetadataDelta;
+import org.apache.kafka.image.MetadataImage;
+import org.apache.kafka.image.TopicsDelta;
 import org.apache.kafka.server.authorizer.AuthorizableRequestContext;
 import org.apache.kafka.server.authorizer.Authorizer;
 import org.apache.kafka.server.record.BrokerCompressionType;
@@ -107,10 +120,13 @@ import org.apache.kafka.server.share.persister.InitializeShareGroupStateResult;
 import org.apache.kafka.server.share.persister.PartitionErrorData;
 import org.apache.kafka.server.share.persister.PartitionFactory;
 import org.apache.kafka.server.share.persister.PartitionStateData;
+import org.apache.kafka.server.share.persister.PartitionStateSummaryData;
 import org.apache.kafka.server.share.persister.Persister;
 import org.apache.kafka.server.share.persister.ReadShareGroupStateSummaryParameters;
+import org.apache.kafka.server.share.persister.ReadShareGroupStateSummaryResult;
 import org.apache.kafka.server.share.persister.TopicData;
 import org.apache.kafka.server.util.FutureUtils;
+import org.apache.kafka.server.util.PartitionMetadataClient;
 import org.apache.kafka.server.util.timer.Timer;
 import org.apache.kafka.server.util.timer.TimerTask;
 
@@ -123,14 +139,14 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntSupplier;
 import java.util.stream.Collectors;
@@ -163,6 +179,7 @@ public class GroupCoordinatorService implements GroupCoordinator {
         private GroupConfigManager groupConfigManager;
         private Persister persister;
         private Optional<Plugin<Authorizer>> authorizerPlugin;
+        private PartitionMetadataClient partitionMetadataClient;
 
         public Builder(
             int nodeId,
@@ -217,6 +234,11 @@ public class GroupCoordinatorService implements GroupCoordinator {
             return this;
         }
 
+        public Builder withPartitionMetadataClient(PartitionMetadataClient partitionMetadataClient) {
+            this.partitionMetadataClient = partitionMetadataClient;
+            return this;
+        }
+
         public GroupCoordinatorService build() {
             requireNonNull(config, "Config must be set.");
             requireNonNull(writer, "Writer must be set.");
@@ -228,9 +250,13 @@ public class GroupCoordinatorService implements GroupCoordinator {
             requireNonNull(groupConfigManager, "GroupConfigManager must be set.");
             requireNonNull(persister, "Persister must be set.");
             requireNonNull(authorizerPlugin, "Authorizer must be set.");
+            requireNonNull(partitionMetadataClient, "PartitionMetadataClient must be set.");
 
             String logPrefix = String.format("GroupCoordinator id=%d", nodeId);
             LogContext logContext = new LogContext(String.format("[%s] ", logPrefix));
+
+            Optional<StreamsGroupTopologyDescriptionPlugin> streamsGroupTopologyDescriptionPlugin =
+                Optional.ofNullable(config.streamsGroupTopologyDescriptionPlugin(Map.of()));
 
             CoordinatorShardBuilderSupplier<GroupCoordinatorShard, CoordinatorRecord> supplier = () ->
                 new GroupCoordinatorShard.Builder(config, groupConfigManager)
@@ -240,6 +266,13 @@ public class GroupCoordinatorService implements GroupCoordinator {
                 logContext,
                 "group-coordinator-event-processor-",
                 config.numThreads(),
+                time,
+                coordinatorRuntimeMetrics
+            );
+
+            ExecutorService executorService = new CoordinatorBackgroundThreadPoolExecutor(
+                "group-coordinator-background-",
+                config.numBackgroundThreads(),
                 time,
                 coordinatorRuntimeMetrics
             );
@@ -254,13 +287,14 @@ public class GroupCoordinatorService implements GroupCoordinator {
                     .withPartitionWriter(writer)
                     .withLoader(loader)
                     .withCoordinatorShardBuilderSupplier(supplier)
-                    .withDefaultWriteTimeOut(Duration.ofMillis(config.offsetCommitTimeoutMs()))
+                    .withWriteTimeout(Duration.ofMillis(config.offsetCommitTimeoutMs()))
                     .withCoordinatorRuntimeMetrics(coordinatorRuntimeMetrics)
                     .withCoordinatorMetrics(groupCoordinatorMetrics)
                     .withSerializer(new GroupCoordinatorRecordSerde())
                     .withCompression(Compression.of(config.offsetTopicCompressionType()).build())
                     .withAppendLingerMs(config.appendLingerMs())
-                    .withExecutorService(Executors.newSingleThreadExecutor())
+                    .withExecutorService(executorService)
+                    .withCachedBufferMaxBytesSupplier(config::cachedBufferMaxBytes)
                     .build();
 
             return new GroupCoordinatorService(
@@ -270,7 +304,10 @@ public class GroupCoordinatorService implements GroupCoordinator {
                 groupCoordinatorMetrics,
                 groupConfigManager,
                 persister,
-                timer
+                timer,
+                partitionMetadataClient,
+                streamsGroupTopologyDescriptionPlugin,
+                time
             );
         }
     }
@@ -321,6 +358,19 @@ public class GroupCoordinatorService implements GroupCoordinator {
     private final Set<String> consumerGroupAssignors;
 
     /**
+     * The client used for getting partition end offsets
+     */
+    private final PartitionMetadataClient partitionMetadataClient;
+
+    /**
+     * The broker-level component that owns the streams-group topology description plugin
+     * (KIP-1331): plugin reference, per-group push back-off, and the three entry points
+     * the service delegates into — heartbeat post-processing, the push RPC, and the
+     * pre-tombstone hook on DeleteGroups.
+     */
+    private final StreamsGroupTopologyDescriptionManager streamsGroupTopologyDescriptionManager;
+
+    /**
      * The number of partitions of the __consumer_offsets topics. This is provided
      * when the component is started.
      */
@@ -328,9 +378,9 @@ public class GroupCoordinatorService implements GroupCoordinator {
 
     /**
      * The metadata image to extract topic id to names map.
-     * This is initialised when the {@link GroupCoordinator#onNewMetadataImage(CoordinatorMetadataImage, CoordinatorMetadataDelta)} is called
+     * This is initialised when the {@link GroupCoordinator#onMetadataUpdate(MetadataDelta, MetadataImage)} is called
      */
-    private CoordinatorMetadataImage metadataImage = null;
+    private volatile CoordinatorMetadataImage metadataImage = null;
 
     /**
      *
@@ -349,7 +399,10 @@ public class GroupCoordinatorService implements GroupCoordinator {
         GroupCoordinatorMetrics groupCoordinatorMetrics,
         GroupConfigManager groupConfigManager,
         Persister persister,
-        Timer timer
+        Timer timer,
+        PartitionMetadataClient partitionMetadataClient,
+        Optional<StreamsGroupTopologyDescriptionPlugin> streamsGroupTopologyDescriptionPlugin,
+        Time time
     ) {
         this.log = logContext.logger(GroupCoordinatorService.class);
         this.config = config;
@@ -363,6 +416,12 @@ public class GroupCoordinatorService implements GroupCoordinator {
             .stream()
             .map(ConsumerGroupPartitionAssignor::name)
             .collect(Collectors.toSet());
+        this.partitionMetadataClient = partitionMetadataClient;
+        this.streamsGroupTopologyDescriptionManager = new StreamsGroupTopologyDescriptionManager(
+            logContext,
+            streamsGroupTopologyDescriptionPlugin,
+            time
+        );
     }
 
     /**
@@ -470,7 +529,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "consumer-group-heartbeat",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.consumerGroupHeartbeat(context, request)
         ).exceptionally(exception -> handleOperationException(
             "consumer-group-heartbeat",
@@ -551,7 +609,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
     private static void throwIfStreamsGroupHeartbeatRequestIsUsingUnsupportedFeatures(
         StreamsGroupHeartbeatRequestData request
     ) throws InvalidRequestException {
-        throwIfNotNull(request.instanceId(), "Static membership is not yet supported.");
         throwIfNotNull(request.taskOffsets(), "TaskOffsets are not supported yet.");
         throwIfNotNull(request.taskEndOffsets(), "TaskEndOffsets are not supported yet.");
         throwIfNotNullOrEmpty(request.warmupTasks(), "WarmupTasks are not supported yet.");
@@ -573,9 +630,8 @@ public class GroupCoordinatorService implements GroupCoordinator {
     ) {
         if (!isActive.get()) {
             return CompletableFuture.completedFuture(
-                new StreamsGroupHeartbeatResult(
-                    new StreamsGroupHeartbeatResponseData().setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code()),
-                    Map.of()
+                StreamsGroupHeartbeatResult.forError(
+                    new StreamsGroupHeartbeatResponseData().setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code())
                 )
             );
         }
@@ -586,33 +642,148 @@ public class GroupCoordinatorService implements GroupCoordinator {
         } catch (Throwable ex) {
             ApiError apiError = ApiError.fromThrowable(ex);
             return CompletableFuture.completedFuture(
-                new StreamsGroupHeartbeatResult(
+                StreamsGroupHeartbeatResult.forError(
                     new StreamsGroupHeartbeatResponseData()
                         .setErrorCode(apiError.error().code())
-                        .setErrorMessage(apiError.message()),
-                    Map.of()
+                        .setErrorMessage(apiError.message())
                 )
             );
         }
 
-        return runtime.scheduleWriteOperation(
+        CompletableFuture<StreamsGroupHeartbeatResult> heartbeat = runtime.scheduleWriteOperation(
             "streams-group-heartbeat",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
-            coordinator -> coordinator.streamsGroupHeartbeat(context, request)
-        ).exceptionally(exception -> handleOperationException(
+            coordinator -> coordinator.streamsGroupHeartbeat(context, request));
+
+        if (streamsGroupTopologyDescriptionManager.isPluginConfigured()) {
+            heartbeat = heartbeat.thenApply(result -> {
+                try {
+                    return streamsGroupTopologyDescriptionManager.maybeSetTopologyDescriptionRequired(
+                        result, request.groupId(), context.requestVersion(), request.memberEpoch());
+                } catch (Throwable t) {
+                    // The heartbeat has already committed durably; if decoration fails (e.g.
+                    // because of an unexpected response shape) we log and return the
+                    // committed result as-is rather than translating into an error via the
+                    // exceptionally below — that would mask a successful broker-side state
+                    // change behind a client-visible failure.
+                    log.warn("Failed to apply topology-description post-processing on the "
+                        + "streams group heartbeat response for group {}; returning the response unmodified.",
+                        request.groupId(), t);
+                    return result;
+                }
+            });
+        }
+
+        return heartbeat.exceptionally(exception -> handleOperationException(
             "streams-group-heartbeat",
             request,
             exception,
             (error, message) ->
-                new StreamsGroupHeartbeatResult(
+                StreamsGroupHeartbeatResult.forError(
                     new StreamsGroupHeartbeatResponseData()
                         .setErrorCode(error.code())
-                        .setErrorMessage(message),
-                    Map.of()
+                        .setErrorMessage(message)
                 ),
             log
         ));
+    }
+
+    /**
+     * See {@link GroupCoordinator#streamsGroupTopologyDescriptionUpdate(AuthorizableRequestContext, StreamsGroupTopologyDescriptionUpdateRequestData)}.
+     *
+     * <p>The push pipeline lives on {@link TopologyDescriptionManager}; the service is
+     * responsible only for short-circuiting on a non-active coordinator and translating
+     * unhandled exceptions into the wire error response.
+     */
+    @Override
+    public CompletableFuture<StreamsGroupTopologyDescriptionUpdateResponseData> streamsGroupTopologyDescriptionUpdate(
+        AuthorizableRequestContext context,
+        StreamsGroupTopologyDescriptionUpdateRequestData request
+    ) {
+        if (!isActive.get()) {
+            return CompletableFuture.completedFuture(
+                new StreamsGroupTopologyDescriptionUpdateResponseData()
+                    .setErrorCode(Errors.COORDINATOR_NOT_AVAILABLE.code())
+            );
+        }
+
+        try {
+            throwIfStreamsGroupTopologyDescriptionUpdateInvalid(request);
+        } catch (Throwable ex) {
+            ApiError apiError = ApiError.fromThrowable(ex);
+            return CompletableFuture.completedFuture(new StreamsGroupTopologyDescriptionUpdateResponseData()
+                .setErrorCode(apiError.error().code())
+                .setErrorMessage(apiError.message())
+            );
+        }
+
+        final String groupId = request.groupId();
+        final String memberId = request.memberId();
+        final int pushedEpoch = request.topologyEpoch();
+        final TopicPartition tp = topicPartitionFor(groupId);
+
+        // The back-off is mutated where the disposition is known: pre-plugin failures (validate /
+        // convert / runtime) never reach the arming code, so a fenced or unauthorized caller
+        // cannot grief the back-off; a transient plugin failure arms it; and the post-plugin
+        // bookkeeping write clears it on success, drops the whole entry if the group was deleted
+        // underneath us, leaves it alone on a coordinator-moved error, or arms it (see
+        // StreamsGroupTopologyDescriptionManager#completeEpochWrite).
+        return runtime.scheduleReadOperation(
+                "streams-group-topology-description-validate",
+                tp,
+                (coordinator, lastCommittedOffset) -> {
+                    coordinator.validateStreamsGroupTopologyDescriptionUpdate(
+                        groupId, memberId, pushedEpoch, lastCommittedOffset);
+                    return null;
+                })
+            .thenApply(__ -> StreamsGroupTopologyDescriptionConverter.fromRequest(request.topologyDescription()))
+            .thenCompose(description -> streamsGroupTopologyDescriptionManager.invokeSetTopology(
+                groupId, pushedEpoch, description))
+            .thenCompose(pluginOutcome -> switch (pluginOutcome.kind()) {
+                case SUCCESS -> runtime.scheduleWriteOperation(
+                    "streams-group-set-stored-topology-epoch",
+                    tp,
+                    coordinator -> coordinator.setStoredDescriptionTopologyEpoch(groupId, pushedEpoch)
+                ).handle((unused, throwable) -> streamsGroupTopologyDescriptionManager.completeEpochWrite(
+                    groupId, pushedEpoch, throwable,
+                    new StreamsGroupTopologyDescriptionUpdateResponseData()));
+                case PERMANENT -> runtime.scheduleWriteOperation(
+                    "streams-group-set-failed-topology-epoch",
+                    tp,
+                    coordinator -> coordinator.setFailedDescriptionTopologyEpoch(groupId, pushedEpoch)
+                ).handle((unused, throwable) -> streamsGroupTopologyDescriptionManager.completeEpochWrite(
+                    groupId, pushedEpoch, throwable,
+                    new StreamsGroupTopologyDescriptionUpdateResponseData()
+                        .setErrorCode(Errors.STREAMS_TOPOLOGY_DESCRIPTION_UPDATE_FAILED.code())
+                        .setErrorMessage(pluginOutcome.message())));
+                case TRANSIENT -> {
+                    streamsGroupTopologyDescriptionManager.armBackoff(groupId, pushedEpoch);
+                    yield CompletableFuture.completedFuture(new StreamsGroupTopologyDescriptionUpdateResponseData()
+                        .setErrorCode(Errors.STREAMS_TOPOLOGY_DESCRIPTION_UPDATE_FAILED.code())
+                        .setErrorMessage(pluginOutcome.message()));
+                }
+            })
+            .exceptionally(exception -> handleOperationException(
+                "streams-group-topology-description-update",
+                request,
+                exception,
+                (error, message) -> new StreamsGroupTopologyDescriptionUpdateResponseData()
+                    .setErrorCode(error.code())
+                    .setErrorMessage(message),
+                log
+            ));
+    }
+
+    private void throwIfStreamsGroupTopologyDescriptionUpdateInvalid(
+        StreamsGroupTopologyDescriptionUpdateRequestData request
+    ) throws InvalidRequestException, UnsupportedVersionException {
+        if (!streamsGroupTopologyDescriptionManager.isPluginConfigured()) {
+            throw new UnsupportedVersionException(
+                "The broker has no streams group topology description plugin configured.");
+        }
+        throwIfEmptyString(request.memberId(), "MemberId can't be empty.");
+        throwIfEmptyString(request.groupId(), "GroupId can't be empty.");
+        throwIfNull(request.topologyDescription(), "TopologyDescription can't be null.");
     }
 
     /**
@@ -664,7 +835,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "share-group-heartbeat",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.shareGroupHeartbeat(context, request)
         ).thenCompose(result -> {
             if (result.getValue().isPresent()) {
@@ -736,7 +906,7 @@ public class GroupCoordinatorService implements GroupCoordinator {
                         Map<Integer, PartitionErrorData> partitionErrors =
                             Optional.ofNullable(topicPartitionErrorsMap)
                                 .map(map -> map.get(topic.topicId()))
-                                .orElse(Collections.emptyMap());
+                                .orElse(Map.of());
                         PartitionErrorData error = partitionErrors.get(partition.partitionIndex());
                         if (error == null) {
                             partitionData = partition.duplicate();
@@ -844,7 +1014,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "uninitialize-share-group-state",
             topicPartitionFor(groupId),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.uninitializeShareGroupState(groupId, topicPartitionMap)
         ).thenApply(__ -> new ShareGroupHeartbeatResponseData()
             .setErrorCode(error.code())
@@ -866,7 +1035,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "initialize-share-group-state",
             topicPartitionFor(groupId),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.initializeShareGroupState(groupId, topicPartitionMap)
         ).handle((__, exp) -> {
             if (exp == null) {
@@ -914,7 +1082,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         runtime.scheduleWriteOperation(
             "classic-group-join",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.classicGroupJoin(context, request, responseFuture)
         ).exceptionally(exception -> {
             if (!responseFuture.isDone()) {
@@ -958,7 +1125,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         runtime.scheduleWriteOperation(
             "classic-group-sync",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.classicGroupSync(context, request, responseFuture)
         ).exceptionally(exception -> {
             if (!responseFuture.isDone()) {
@@ -999,7 +1165,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "classic-group-heartbeat",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.classicGroupHeartbeat(context, request)
         ).exceptionally(exception -> handleOperationException(
             "classic-group-heartbeat",
@@ -1042,7 +1207,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "classic-group-leave",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.classicGroupLeave(context, request)
         ).exceptionally(exception -> handleOperationException(
             "classic-group-leave",
@@ -1166,12 +1330,13 @@ public class GroupCoordinatorService implements GroupCoordinator {
     }
 
     /**
-     * See {@link GroupCoordinator#streamsGroupDescribe(AuthorizableRequestContext, List)}.
+     * See {@link GroupCoordinator#streamsGroupDescribe(AuthorizableRequestContext, List, boolean)}.
      */
     @Override
     public CompletableFuture<List<StreamsGroupDescribeResponseData.DescribedGroup>> streamsGroupDescribe(
         AuthorizableRequestContext context,
-        List<String> groupIds
+        List<String> groupIds,
+        boolean includeTopologyDescription
     ) {
         if (!isActive.get()) {
             return CompletableFuture.completedFuture(StreamsGroupDescribeRequest.getErrorDescribedGroupList(
@@ -1203,7 +1368,10 @@ public class GroupCoordinatorService implements GroupCoordinator {
                     "streams-group-describe",
                     topicPartition,
                     (coordinator, lastCommittedOffset) -> coordinator.streamsGroupDescribe(groupList, lastCommittedOffset)
-                ).exceptionally(exception -> handleOperationException(
+                ).thenCompose(result -> includeTopologyDescription
+                    ? streamsGroupTopologyDescriptionManager.attachTopologyDescriptions(result)
+                    : CompletableFuture.completedFuture(result.describedGroups()))
+                .exceptionally(exception -> handleOperationException(
                     "streams-group-describe",
                     groupList,
                     exception,
@@ -1293,7 +1461,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "share-group-offsets-alter",
             topicPartitionFor(groupId),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.alterShareGroupOffsets(groupId, request)
         ).thenCompose(result ->
             persisterInitialize(result.getValue(), result.getKey())
@@ -1407,9 +1574,42 @@ public class GroupCoordinatorService implements GroupCoordinator {
                     return CompletableFuture.completedFuture(deletableGroupResults);
                 }
 
-                return handleDeleteGroups(context, topicPartition, retainedGroupIds)
-                    .whenComplete((resp, __) -> resp.forEach(result -> deletableGroupResults.add(result.duplicate())))
-                    .thenApply(__ -> deletableGroupResults);
+                return deleteStreamsTopologyDescriptions(topicPartition, retainedGroupIds)
+                    .thenCompose(streamsErrMap -> {
+                        List<String> afterStreams = filterStreamsTopologyErrors(
+                            streamsErrMap, retainedGroupIds, deletableGroupResults);
+                        if (afterStreams.isEmpty()) {
+                            return CompletableFuture.completedFuture(deletableGroupResults);
+                        }
+                        return handleDeleteGroups(context, topicPartition, afterStreams)
+                            .whenComplete((resp, __) -> resp.forEach(result -> deletableGroupResults.add(result.duplicate())))
+                            .thenApply(__ -> deletableGroupResults);
+                    })
+                    .exceptionally(exception -> {
+                        // Defensive net for any uncaught synchronous throw in the
+                        // post-deleteStreamsTopologyDescriptions stage. Without this, the exception would
+                        // propagate through FutureUtils.combineFutures.join() and fail the
+                        // whole cross-partition DeleteGroups response — including groups on
+                        // other partitions that already succeeded. Runtime read failures
+                        // inside deleteStreamsTopologyDescriptions are absorbed there, so they never reach
+                        // this branch; what we are catching here is the synchronous stages
+                        // (filterStreamsTopologyErrors etc.). Fold the exception into
+                        // per-group failures for any retainedGroupIds not yet recorded.
+                        ApiError apiError = ApiError.fromThrowable(exception);
+                        Set<String> recorded = new HashSet<>();
+                        deletableGroupResults.forEach(result -> recorded.add(result.groupId()));
+                        for (String groupId : retainedGroupIds) {
+                            if (!recorded.contains(groupId)) {
+                                deletableGroupResults.add(
+                                    new DeleteGroupsResponseData.DeletableGroupResult()
+                                        .setGroupId(groupId)
+                                        .setErrorCode(apiError.error().code())
+                                        .setErrorMessage(apiError.message())
+                                );
+                            }
+                        }
+                        return deletableGroupResults;
+                    });
             });
             // deleteShareGroups has its own exceptionally block, so we don't need one here.
 
@@ -1468,6 +1668,96 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return groupSet.stream().toList();
     }
 
+    /**
+     * Drive the topology-description plugin's pre-delete flow: identify which of the
+     * supplied group ids carry a stored topology description, call
+     * {@code plugin.deleteTopology} for each, and drop the corresponding back-off entries.
+     *
+     * <p>Short-circuits with an empty failure map when no plugin is configured, so a
+     * broker with the feature disabled does not hit the runtime for a per-partition read.
+     * The chain mirrors the structure of {@code streamsGroupTopologyDescriptionUpdate}:
+     * the manager exposes pure plugin invocation ({@code invokeDeleteTopologies}) plus
+     * a back-off mutation ({@code clearBackoffGroup}), and this service helper assembles
+     * the runtime read, the plugin call, and the back-off cleanup into one future.
+     *
+     * <p>Runtime read failures (e.g. {@code NOT_COORDINATOR}) are folded back into the
+     * same per-group failure map so the caller can report them uniformly; we deliberately
+     * pass through the more specific runtime error rather than collapsing everything to
+     * {@code GROUP_DELETION_FAILED}.
+     */
+    private CompletableFuture<Map<String, ApiError>> deleteStreamsTopologyDescriptions(
+        TopicPartition topicPartition,
+        List<String> groupIds
+    ) {
+        if (!streamsGroupTopologyDescriptionManager.isPluginConfigured()) {
+            return CompletableFuture.completedFuture(Map.of());
+        }
+        return runtime.scheduleReadOperation(
+                "streams-group-topology-pre-delete",
+                topicPartition,
+                (coordinator, lastCommittedOffset) ->
+                    coordinator.streamsGroupsWithStoredTopologyDescription(groupIds, lastCommittedOffset))
+            .thenCompose(groupsWithStored ->
+                streamsGroupTopologyDescriptionManager.invokeDeleteTopologies(groupsWithStored)
+                    .thenApply(failures -> {
+                        // Clear back-off entries for every group whose plugin state we
+                        // attempted to delete (regardless of plugin outcome): the group is
+                        // about to be tombstoned on success and re-evaluated by the next
+                        // heartbeat on failure, so any in-flight back-off entry at the old
+                        // epoch is no longer load-bearing.
+                        groupsWithStored.forEach(streamsGroupTopologyDescriptionManager::clearBackoffGroup);
+                        return failures;
+                    }))
+            .exceptionally(exception -> handleOperationException(
+                // Translate coordinator errors so a read failure reports the same retriable code
+                // as the rest of the DeleteGroups pipeline (e.g. NOT_LEADER_OR_FOLLOWER ->
+                // NOT_COORDINATOR), and unwrap/sanitize the message.
+                "streams-group-topology-pre-delete",
+                groupIds,
+                exception,
+                (error, message) -> {
+                    ApiError apiError = new ApiError(error, message);
+                    Map<String, ApiError> failures = new HashMap<>();
+                    groupIds.forEach(id -> failures.put(id, apiError));
+                    return failures;
+                },
+                log
+            ));
+    }
+
+    /**
+     * Move plugin failures into {@code deletableGroupResults} and return the group ids
+     * that should still proceed to tombstoning. Version-agnostic: the raw {@link ApiError}
+     * is added as-is; any per-version translation of new error codes (e.g. downgrading
+     * {@code GROUP_DELETION_FAILED} for {@code DeleteGroups} v&lt;3) happens at the
+     * {@code KafkaApis} layer where {@code request.context.apiVersion()} is in scope and
+     * matches how other new error codes are version-gated.
+     */
+    private static List<String> filterStreamsTopologyErrors(
+        Map<String, ApiError> streamsErrMap,
+        List<String> groupIds,
+        DeleteGroupsResponseData.DeletableGroupResultCollection deletableGroupResults
+    ) {
+        if (streamsErrMap.isEmpty()) {
+            return groupIds;
+        }
+        List<String> retained = new ArrayList<>();
+        for (String groupId : groupIds) {
+            ApiError err = streamsErrMap.get(groupId);
+            if (err == null) {
+                retained.add(groupId);
+            } else {
+                deletableGroupResults.add(
+                    new DeleteGroupsResponseData.DeletableGroupResult()
+                        .setGroupId(groupId)
+                        .setErrorCode(err.error().code())
+                        .setErrorMessage(err.message())
+                );
+            }
+        }
+        return retained;
+    }
+
     private CompletableFuture<DeleteGroupsResponseData.DeletableGroupResultCollection> handleDeleteGroups(
         AuthorizableRequestContext context,
         TopicPartition topicPartition,
@@ -1476,7 +1766,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "delete-groups",
             topicPartition,
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.deleteGroups(context, groupIds)
         ).exceptionally(exception -> handleOperationException(
             "delete-groups",
@@ -1495,7 +1784,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "delete-share-groups",
             topicPartition,
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.sharePartitionDeleteRequests(groupList)
         ).thenCompose(
             this::performShareGroupsDeletion
@@ -1612,6 +1900,8 @@ public class GroupCoordinatorService implements GroupCoordinator {
             ));
         }
 
+        var name = OffsetFetchRequest.requestAllOffsets(request) ? "fetch-all-offsets" : "fetch-offsets";
+
         // The require stable flag when set tells the broker to hold on returning unstable
         // (or uncommitted) offsets. In the previous implementation of the group coordinator,
         // the UNSTABLE_OFFSET_COMMIT error is returned when unstable offsets are present. As
@@ -1622,82 +1912,23 @@ public class GroupCoordinatorService implements GroupCoordinator {
         // the pending offsets are committed. Otherwise, we use a read operation.
         if (requireStable) {
             return runtime.scheduleWriteOperation(
-                "fetch-offsets",
+                name,
                 topicPartitionFor(request.groupId()),
-                Duration.ofMillis(config.offsetCommitTimeoutMs()),
                 coordinator -> new CoordinatorResult<>(
                     List.of(),
                     coordinator.fetchOffsets(request, Long.MAX_VALUE)
                 )
             ).exceptionally(exception -> handleOffsetFetchException(
-                "fetch-offsets",
+                name,
                 context,
                 request,
                 exception
             ));
         } else {
             return runtime.scheduleReadOperation(
-                "fetch-offsets",
+                name,
                 topicPartitionFor(request.groupId()),
                 (coordinator, offset) -> coordinator.fetchOffsets(request, offset)
-            );
-        }
-    }
-
-    /**
-     * See {@link GroupCoordinator#fetchAllOffsets(AuthorizableRequestContext, OffsetFetchRequestData.OffsetFetchRequestGroup, boolean)}.
-     */
-    @Override
-    public CompletableFuture<OffsetFetchResponseData.OffsetFetchResponseGroup> fetchAllOffsets(
-        AuthorizableRequestContext context,
-        OffsetFetchRequestData.OffsetFetchRequestGroup request,
-        boolean requireStable
-    ) {
-        if (!isActive.get()) {
-            return CompletableFuture.completedFuture(OffsetFetchResponse.groupError(
-                request,
-                Errors.COORDINATOR_NOT_AVAILABLE,
-                context.requestVersion()
-            ));
-        }
-
-        // For backwards compatibility, we support fetch commits for the empty group id.
-        if (request.groupId() == null) {
-            return CompletableFuture.completedFuture(OffsetFetchResponse.groupError(
-                request,
-                Errors.INVALID_GROUP_ID,
-                context.requestVersion()
-            ));
-        }
-
-        // The require stable flag when set tells the broker to hold on returning unstable
-        // (or uncommitted) offsets. In the previous implementation of the group coordinator,
-        // the UNSTABLE_OFFSET_COMMIT error is returned when unstable offsets are present. As
-        // the new implementation relies on timeline data structures, the coordinator does not
-        // really know whether offsets are stable or not so it is hard to return the same error.
-        // Instead, we use a write operation when the flag is set to guarantee that the fetch
-        // is based on all the available offsets and to ensure that the response waits until
-        // the pending offsets are committed. Otherwise, we use a read operation.
-        if (requireStable) {
-            return runtime.scheduleWriteOperation(
-                "fetch-all-offsets",
-                topicPartitionFor(request.groupId()),
-                Duration.ofMillis(config.offsetCommitTimeoutMs()),
-                coordinator -> new CoordinatorResult<>(
-                    List.of(),
-                    coordinator.fetchAllOffsets(request, Long.MAX_VALUE)
-                )
-            ).exceptionally(exception -> handleOffsetFetchException(
-                "fetch-all-offsets",
-                context,
-                request,
-                exception
-            ));
-        } else {
-            return runtime.scheduleReadOperation(
-                "fetch-all-offsets",
-                topicPartitionFor(request.groupId()),
-                (coordinator, offset) -> coordinator.fetchAllOffsets(request, offset)
             );
         }
     }
@@ -1825,7 +2056,7 @@ public class GroupCoordinatorService implements GroupCoordinator {
         persister.readSummary(ReadShareGroupStateSummaryParameters.from(readSummaryRequestData))
             .whenComplete((result, error) -> {
                 if (error != null) {
-                    log.error("Failed to read summary of the share partition");
+                    log.error("Failed to read summary of the share partition", error);
                     future.completeExceptionally(error);
                     return;
                 }
@@ -1835,27 +2066,128 @@ public class GroupCoordinatorService implements GroupCoordinator {
                     return;
                 }
 
-                // Return -1 (uninitialized offset) for the situation where the persister returned an error.
-                // This is consistent with OffsetFetch for situations in which there is no offset information to fetch.
-                // It's treated as absence of data, rather than an error.
-                result.topicsData().forEach(topicData ->
-                    describeShareGroupOffsetsResponseTopicList.add(new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseTopic()
-                        .setTopicId(topicData.topicId())
-                        .setTopicName(requestTopicIdToNameMapping.get(topicData.topicId()))
-                        .setPartitions(topicData.partitions().stream().map(
-                            partitionData -> new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponsePartition()
+                // Now compute lag for each partition and build the final response.
+                computeShareGroupLagAndBuildResponse(
+                    result,
+                    requestTopicIdToNameMapping,
+                    describeShareGroupOffsetsResponseTopicList,
+                    future,
+                    readSummaryRequestData.groupId()
+                );
+            });
+        return future;
+    }
+
+    private void computeShareGroupLagAndBuildResponse(
+        ReadShareGroupStateSummaryResult readSummaryResult,
+        Map<Uuid, String> requestTopicIdToNameMapping,
+        List<DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseTopic> describeShareGroupOffsetsResponseTopicList,
+        CompletableFuture<DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseGroup> responseFuture,
+        String groupId
+    ) {
+        // This set keeps track of the partitions for which lag computation is needed.
+        Set<TopicPartition> partitionsToComputeLag = new HashSet<>();
+
+        readSummaryResult.topicsData().forEach(topicData -> {
+            topicData.partitions().forEach(partitionData -> {
+                if (shouldComputeSharePartitionLag(partitionData)) {
+                    // If the readSummaryResult is successful for a partition, we need to compute lag.
+                    partitionsToComputeLag.add(new TopicPartition(requestTopicIdToNameMapping.get(topicData.topicId()), partitionData.partition()));
+                }
+            });
+        });
+
+        // Fetch latest offsets for all partitions that need lag computation.
+        Map<TopicPartition, CompletableFuture<PartitionMetadataClient.OffsetResponse>> partitionLatestOffsets =
+            partitionsToComputeLag.isEmpty() ? Map.of() : partitionMetadataClient.listLatestOffsets(partitionsToComputeLag);
+
+        // Final response object to be built. It will include lag information computed from partitionMetadataClient.
+        DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseGroup responseGroup =
+            new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseGroup()
+                .setGroupId(groupId);
+
+        // List of response topics to be set in the response group.
+        List<DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseTopic> responseTopics = new ArrayList<>();
+
+        CompletableFuture.allOf(partitionLatestOffsets.values().toArray(new CompletableFuture<?>[0]))
+            .whenComplete((result, error) -> {
+                // The error variable will not be null when one or more of the partitionLatestOffsets futures get completed exceptionally.
+                // As per the handling of these futures in NetworkPartitionMetadataClient, this should not happen, as error cases are
+                // handled within the OffsetResponse object for each partition. This is just a safety check.
+                if (error != null) {
+                    log.error("Failed to retrieve partition end offsets while calculating share partitions lag for share group - {}", groupId, error);
+                    responseFuture.completeExceptionally(error);
+                    return;
+                }
+                readSummaryResult.topicsData().forEach(topicData -> {
+                    // Build response for each topic.
+                    DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseTopic topic =
+                        new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseTopic()
+                            .setTopicId(topicData.topicId())
+                            .setTopicName(requestTopicIdToNameMapping.get(topicData.topicId()));
+
+                    // Build response for each partition within the topic.
+                    List<DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponsePartition> partitionResponses = new ArrayList<>();
+
+                    topicData.partitions().forEach(partitionData -> {
+                        TopicPartition tp = new TopicPartition(requestTopicIdToNameMapping.get(topicData.topicId()), partitionData.partition());
+                        // For the partitions where lag computation is not needed, a partitionResponse is built directly.
+                        // The lag is set to -1 (uninitialized lag) in these cases. If the persister returned an error for a
+                        // partition, the startOffset is set to -1 (uninitialized offset) and the leaderEpoch is set to 0
+                        // (default epoch). This is consistent with OffsetFetch for situations in which there is no offset
+                        // information to fetch. It's treated as absence of data, rather than an error
+                        if (!shouldComputeSharePartitionLag(partitionData)) {
+                            partitionResponses.add(new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponsePartition()
                                 .setPartitionIndex(partitionData.partition())
                                 .setStartOffset(partitionData.errorCode() == Errors.NONE.code() ? partitionData.startOffset() : PartitionFactory.UNINITIALIZED_START_OFFSET)
                                 .setLeaderEpoch(partitionData.errorCode() == Errors.NONE.code() ? partitionData.leaderEpoch() : PartitionFactory.DEFAULT_LEADER_EPOCH)
-                        ).toList())
-                    ));
+                                .setLag(PartitionFactory.UNINITIALIZED_LAG));
+                        } else {
+                            // This code is reached when allOf above is complete, which happens when all the
+                            // individual futures are complete. Thus, the call to join() here is safe.
+                            PartitionMetadataClient.OffsetResponse offsetResponse = partitionLatestOffsets.get(tp).join();
+                            if (offsetResponse.error().code() != Errors.NONE.code()) {
+                                // If there was an error during fetching latest offset for a partition, return the error in the response for that partition.
+                                log.error("Partition end offset fetch failed for topicPartition {}", tp);
+                                partitionResponses.add(new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponsePartition()
+                                    .setPartitionIndex(partitionData.partition())
+                                    .setErrorCode(offsetResponse.error().code())
+                                    .setErrorMessage(offsetResponse.error().message()));
+                            } else {
+                                // Compute lag as (partition end offset - startOffset - deliveryCompleteCount).
+                                // Note, partition end offset, which is retrieved from partitionMetadataClient, is the offset of
+                                // the next message to be produced, not the last message offset. Thus, the formula for lag computation
+                                // does not need a +1 adjustment.
+                                long lag = offsetResponse.offset() - partitionData.startOffset() - partitionData.deliveryCompleteCount();
+                                partitionResponses.add(new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponsePartition()
+                                    .setPartitionIndex(partitionData.partition())
+                                    .setStartOffset(partitionData.startOffset())
+                                    .setLeaderEpoch(partitionData.leaderEpoch())
+                                    .setLag(lag));
+                            }
+                        }
+                    });
+                    topic.setPartitions(partitionResponses);
+                    responseTopics.add(topic);
+                });
 
-                future.complete(
-                    new DescribeShareGroupOffsetsResponseData.DescribeShareGroupOffsetsResponseGroup()
-                        .setGroupId(readSummaryRequestData.groupId())
-                        .setTopics(describeShareGroupOffsetsResponseTopicList));
+                // Add topics which did not exist in the metadata image and were handled earlier.
+                responseTopics.addAll(describeShareGroupOffsetsResponseTopicList);
+                // Set topics in the response group.
+                responseGroup.setTopics(responseTopics);
+                // Complete the future with the built response.
+                responseFuture.complete(responseGroup);
             });
-        return future;
+    }
+
+    private boolean shouldComputeSharePartitionLag(PartitionStateSummaryData partitionData) {
+        // The share partition lag would be computed for a share partition ony if -
+        // 1. The read summary result for the partition is successful.
+        // 3. The start offset is initialized.
+        // 4. The delivery complete count is initialized.
+        return partitionData.errorCode() == Errors.NONE.code() &&
+            partitionData.startOffset() != PartitionFactory.UNINITIALIZED_START_OFFSET &&
+            partitionData.deliveryCompleteCount() != PartitionFactory.UNINITIALIZED_DELIVERY_COMPLETE_COUNT;
     }
 
     /**
@@ -1884,7 +2216,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "initiate-delete-share-group-offsets",
             topicPartitionFor(groupId),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.initiateDeleteShareGroupOffsets(groupId, requestData)
         ).thenCompose(resultHolder -> deleteShareGroupOffsetsState(groupId, resultHolder)
         ).exceptionally(exception -> handleOperationException(
@@ -1989,7 +2320,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "complete-delete-share-group-offsets",
             topicPartitionFor(groupId),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.completeDeleteShareGroupOffsets(groupId, successTopics, errorTopicResponses)
         ).exceptionally(exception -> handleOperationException(
             "complete-delete-share-group-offsets",
@@ -2027,7 +2357,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "commit-offset",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.commitOffset(context, request)
         ).exceptionally(exception -> handleOperationException(
             "commit-offset",
@@ -2067,7 +2396,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
             request.transactionalId(),
             request.producerId(),
             request.producerEpoch(),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.commitTransactionalOffset(context, request),
             context.requestVersion()
         ).exceptionally(exception -> handleOperationException(
@@ -2103,7 +2431,6 @@ public class GroupCoordinatorService implements GroupCoordinator {
         return runtime.scheduleWriteOperation(
             "delete-offsets",
             topicPartitionFor(request.groupId()),
-            Duration.ofMillis(config.offsetCommitTimeoutMs()),
             coordinator -> coordinator.deleteOffsets(context, request)
         ).exceptionally(exception -> handleOperationException(
             "delete-offsets",
@@ -2115,7 +2442,7 @@ public class GroupCoordinatorService implements GroupCoordinator {
     }
 
     /**
-     * See {@link GroupCoordinator#completeTransaction(TopicPartition, long, short, int, TransactionResult, Duration)}.
+     * See {@link GroupCoordinator#completeTransaction(TopicPartition, long, short, int, TransactionResult, short)}.
      */
     @Override
     public CompletableFuture<Void> completeTransaction(
@@ -2124,14 +2451,14 @@ public class GroupCoordinatorService implements GroupCoordinator {
         short producerEpoch,
         int coordinatorEpoch,
         TransactionResult result,
-        Duration timeout
+        short transactionVersion
     ) {
         if (!isActive.get()) {
-            return FutureUtils.failedFuture(Errors.COORDINATOR_NOT_AVAILABLE.exception());
+            return CompletableFuture.failedFuture(Errors.COORDINATOR_NOT_AVAILABLE.exception());
         }
 
         if (!tp.topic().equals(Topic.GROUP_METADATA_TOPIC_NAME)) {
-            return FutureUtils.failedFuture(new IllegalStateException(
+            return CompletableFuture.failedFuture(new IllegalStateException(
                 "Completing a transaction for " + tp + " is not expected"
             ));
         }
@@ -2143,64 +2470,8 @@ public class GroupCoordinatorService implements GroupCoordinator {
             producerEpoch,
             coordinatorEpoch,
             result,
-            timeout
+            transactionVersion
         );
-    }
-
-    /**
-     * See {@link GroupCoordinator#onPartitionsDeleted(List, BufferSupplier)}.
-     */
-    @Override
-    public void onPartitionsDeleted(
-        List<TopicPartition> topicPartitions,
-        BufferSupplier bufferSupplier
-    ) throws ExecutionException, InterruptedException {
-        throwIfNotActive();
-
-        CompletableFuture.allOf(
-            FutureUtils.mapExceptionally(
-                runtime.scheduleWriteAllOperation(
-                    "on-partition-deleted",
-                    Duration.ofMillis(config.offsetCommitTimeoutMs()),
-                    coordinator -> coordinator.onPartitionsDeleted(topicPartitions)
-                ),
-                exception -> {
-                    log.error("Could not delete offsets for deleted partitions {} due to: {}.",
-                        topicPartitions, exception.getMessage(), exception
-                    );
-                    return null;
-                }
-            ).toArray(new CompletableFuture<?>[0])
-        ).get();
-
-        // At this point the metadata will not have been updated
-        // with the deleted topics. However, we must guard against it.
-        if (metadataImage == null || metadataImage.equals(CoordinatorMetadataImage.EMPTY)) {
-            return;
-        }
-
-        Set<Uuid> topicIds = topicPartitions.stream()
-            .filter(tp -> metadataImage.topicMetadata(tp.topic()).isPresent())
-            .map(tp -> metadataImage.topicMetadata(tp.topic()).get().id())
-            .collect(Collectors.toSet());
-
-        if (topicIds.isEmpty()) {
-            return;
-        }
-
-        CompletableFuture.allOf(
-            FutureUtils.mapExceptionally(
-                runtime.scheduleWriteAllOperation(
-                    "maybe-cleanup-share-group-state",
-                    Duration.ofMillis(config.offsetCommitTimeoutMs()),
-                    coordinator -> coordinator.maybeCleanupShareGroupState(topicIds)
-                ),
-                exception -> {
-                    log.error("Unable to cleanup state for the deleted topics {}", topicIds, exception);
-                    return null;
-                }
-            ).toArray(new CompletableFuture<?>[0])
-        ).get();
     }
 
     /**
@@ -2234,28 +2505,95 @@ public class GroupCoordinatorService implements GroupCoordinator {
     }
 
     /**
-     * See {@link GroupCoordinator#onNewMetadataImage(CoordinatorMetadataImage, CoordinatorMetadataDelta)}.
+     * See {@link GroupCoordinator#onMetadataUpdate(MetadataDelta, MetadataImage)}.
      */
     @Override
-    public void onNewMetadataImage(
-        CoordinatorMetadataImage newImage,
-        CoordinatorMetadataDelta delta
+    public void onMetadataUpdate(
+        MetadataDelta delta,
+        MetadataImage newImage
     ) {
         throwIfNotActive();
-        metadataImage = newImage;
-        runtime.onNewMetadataImage(newImage, delta);
+        Objects.requireNonNull(delta, "delta must be provided");
+        Objects.requireNonNull(newImage, "newImage must be provided");
+
+        // Update the metadata image and propagate to runtime.
+        var wrappedImage = new KRaftCoordinatorMetadataImage(newImage);
+        var wrappedDelta = new KRaftCoordinatorMetadataDelta(delta);
+        metadataImage = wrappedImage;
+        runtime.onMetadataUpdate(wrappedDelta, wrappedImage);
+
+        // Handle topic deletions from the delta.
+        if (delta.topicsDelta() != null && !delta.topicsDelta().deletedTopicIds().isEmpty()) {
+            handleTopicsDeletion(delta.topicsDelta());
+        }
+    }
+
+    /**
+     * Handles the deletion of topics by scheduling write operations
+     * to delete committed offsets and clean up share group state.
+     *
+     * @param topicsDelta The topics delta containing deleted topic IDs.
+     */
+    private void handleTopicsDeletion(TopicsDelta topicsDelta) {
+        var deletedTopicIds = topicsDelta.deletedTopicIds();
+        var deletedTopics = new ArrayList<DeletedTopic>();
+
+        deletedTopicIds.forEach(topicId -> {
+            var topicImage = topicsDelta.image().getTopic(topicId);
+            if (topicImage != null) {
+                deletedTopics.add(new DeletedTopic(topicId, topicImage.name()));
+            }
+        });
+
+        var futures = new ArrayList<CompletableFuture<Void>>();
+
+        if (!deletedTopics.isEmpty()) {
+            // Schedule offset deletion.
+            futures.addAll(
+                FutureUtils.mapExceptionally(
+                    runtime.scheduleWriteAllOperation(
+                        "on-topics-deleted",
+                        coordinator -> coordinator.onTopicsDeleted(deletedTopics)
+                    ),
+                    exception -> {
+                        log.error("Could not delete offsets for deleted topics {} due to: {}.",
+                            deletedTopics, exception.getMessage(), exception);
+                        return null;
+                    }
+                )
+            );
+        }
+
+        if (!deletedTopicIds.isEmpty()) {
+            // Schedule share group state cleanup.
+            futures.addAll(
+                FutureUtils.mapExceptionally(
+                    runtime.scheduleWriteAllOperation(
+                        "maybe-cleanup-share-group-state",
+                        coordinator -> coordinator.maybeCleanupShareGroupState(deletedTopicIds)
+                    ),
+                    exception -> {
+                        log.error("Unable to cleanup state for the deleted topics {}", deletedTopicIds, exception);
+                        return null;
+                    }
+                )
+            );
+        }
+
+        // Wait for all operations to complete.
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[0])).join();
     }
 
     /**
      * See {@link GroupCoordinator#groupMetadataTopicConfigs()}.
      */
     @Override
-    public Properties groupMetadataTopicConfigs() {
-        Properties properties = new Properties();
-        properties.put(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT);
-        properties.put(TopicConfig.COMPRESSION_TYPE_CONFIG, BrokerCompressionType.PRODUCER.name);
-        properties.put(TopicConfig.SEGMENT_BYTES_CONFIG, String.valueOf(config.offsetsTopicSegmentBytes()));
-        return properties;
+    public Map<String, String> groupMetadataTopicConfigs() {
+        return Map.of(
+            TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT,
+            TopicConfig.COMPRESSION_TYPE_CONFIG, BrokerCompressionType.PRODUCER.name,
+            TopicConfig.SEGMENT_BYTES_CONFIG, String.valueOf(config.offsetsTopicSegmentBytes())
+        );
     }
 
     /**
@@ -2305,6 +2643,7 @@ public class GroupCoordinatorService implements GroupCoordinator {
         log.info("Shutting down.");
         isActive.set(false);
         Utils.closeQuietly(runtime, "coordinator runtime");
+        Utils.closeQuietly(streamsGroupTopologyDescriptionManager, "streams group topology description manager");
         Utils.closeQuietly(groupCoordinatorMetrics, "group coordinator metrics");
         Utils.closeQuietly(groupConfigManager, "group config manager");
         log.info("Shutdown complete.");
@@ -2343,11 +2682,11 @@ public class GroupCoordinatorService implements GroupCoordinator {
                     // NOT_ENOUGH_REPLICAS and REQUEST_TIMED_OUT to COORDINATOR_NOT_AVAILABLE,
                     // COORDINATOR_NOT_AVAILABLE is also not handled by consumers on versions prior to
                     // 3.9.
-                    OffsetFetchResponse.groupError(
+                OffsetFetchResponse.groupError(
                             request,
                             Errors.NOT_COORDINATOR,
                             context.requestVersion()
-                    );
+                );
             default -> handleOperationException(
                     operationName,
                     request,

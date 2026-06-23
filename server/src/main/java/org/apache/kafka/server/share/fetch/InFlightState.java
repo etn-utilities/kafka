@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.server.share.fetch;
 
-import org.apache.kafka.common.Uuid;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +37,7 @@ public class InFlightState {
     /**
      * empty member id used to indicate when a record is not acquired by any member.
      */
-    private static final String EMPTY_MEMBER_ID = Uuid.ZERO_UUID.toString();
+    public static final String EMPTY_MEMBER_ID = "";
 
     // The state of the fetch batch records.
     private RecordState state;
@@ -148,7 +147,7 @@ public class InFlightState {
      * @return {@code InFlightState} if update succeeds, null otherwise. Returning state
      *         helps update chaining.
      */
-    public InFlightState tryUpdateState(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount, String newMemberId) {
+    public InFlightState tryUpdateState(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount, String newMemberId, boolean dlqSupportEnabled) {
         try {
             // If the state transition is in progress, the state should not be updated.
             if (hasOngoingStateTransition()) {
@@ -162,7 +161,7 @@ public class InFlightState {
             }
 
             if (newState == RecordState.AVAILABLE && ops != DeliveryCountOps.DECREASE && deliveryCount >= maxDeliveryCount) {
-                newState = RecordState.ARCHIVED;
+                newState = dlqSupportEnabled ? RecordState.ARCHIVING : RecordState.ARCHIVED;
             }
             state = state.validateTransition(newState);
             if (newState != RecordState.ARCHIVED) {
@@ -201,9 +200,9 @@ public class InFlightState {
      * @return {@code InFlightState} if update succeeds, null otherwise. Returning state
      *         helps update chaining.
      */
-    public InFlightState startStateTransition(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount, String newMemberId) {
+    public InFlightState startStateTransition(RecordState newState, DeliveryCountOps ops, int maxDeliveryCount, String newMemberId, boolean dlqSupportEnabled) {
         InFlightState currentState = new InFlightState(state, deliveryCount, memberId, acquisitionLockTimeoutTask);
-        InFlightState updatedState = tryUpdateState(newState, ops, maxDeliveryCount, newMemberId);
+        InFlightState updatedState = tryUpdateState(newState, ops, maxDeliveryCount, newMemberId, dlqSupportEnabled);
         if (updatedState != null) {
             rollbackState = new RollbackState(currentState, maxDeliveryCount);
         }

@@ -92,7 +92,8 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData.Assignment assignment = new StreamsRebalanceData.Assignment(
             Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 1)),
             Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 2)),
-            Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 3))
+            Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 3)),
+            true
         );
 
         assertThrows(
@@ -111,11 +112,11 @@ public class StreamsRebalanceDataTest {
 
     @Test
     public void assignmentShouldNotAcceptNulls() {
-        final Exception exception1 = assertThrows(NullPointerException.class, () -> new StreamsRebalanceData.Assignment(null, Set.of(), Set.of()));
+        final Exception exception1 = assertThrows(NullPointerException.class, () -> new StreamsRebalanceData.Assignment(null, Set.of(), Set.of(), true));
         assertEquals("Active tasks cannot be null", exception1.getMessage());
-        final Exception exception2 = assertThrows(NullPointerException.class, () -> new StreamsRebalanceData.Assignment(Set.of(), null, Set.of()));
+        final Exception exception2 = assertThrows(NullPointerException.class, () -> new StreamsRebalanceData.Assignment(Set.of(), null, Set.of(), true));
         assertEquals("Standby tasks cannot be null", exception2.getMessage());
-        final Exception exception3 = assertThrows(NullPointerException.class, () -> new StreamsRebalanceData.Assignment(Set.of(), Set.of(), null));
+        final Exception exception3 = assertThrows(NullPointerException.class, () -> new StreamsRebalanceData.Assignment(Set.of(), Set.of(), null, true));
         assertEquals("Warmup tasks cannot be null", exception3.getMessage());
     }
 
@@ -125,43 +126,56 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData.Assignment assignment = new StreamsRebalanceData.Assignment(
             Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 1)),
             Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 2)),
-            Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 3))
+            Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 3)),
+            true
         );
         final StreamsRebalanceData.Assignment assignmentEqual = new StreamsRebalanceData.Assignment(
             assignment.activeTasks(),
             assignment.standbyTasks(),
-            assignment.warmupTasks()
+            assignment.warmupTasks(),
+            assignment.isGroupReady()
         );
         Set<StreamsRebalanceData.TaskId> unequalActiveTasks = new HashSet<>(assignment.activeTasks());
         unequalActiveTasks.add(additionalTask);
         final StreamsRebalanceData.Assignment assignmentUnequalActiveTasks = new StreamsRebalanceData.Assignment(
             unequalActiveTasks,
             assignment.standbyTasks(),
-            assignment.warmupTasks()
+            assignment.warmupTasks(),
+            assignment.isGroupReady()
         );
         Set<StreamsRebalanceData.TaskId> unequalStandbyTasks = new HashSet<>(assignment.standbyTasks());
         unequalStandbyTasks.add(additionalTask);
         final StreamsRebalanceData.Assignment assignmentUnequalStandbyTasks = new StreamsRebalanceData.Assignment(
             assignment.activeTasks(),
             unequalStandbyTasks,
-            assignment.warmupTasks()
+            assignment.warmupTasks(),
+            assignment.isGroupReady()
         );
         Set<StreamsRebalanceData.TaskId> unequalWarmupTasks = new HashSet<>(assignment.warmupTasks());
         unequalWarmupTasks.add(additionalTask);
         final StreamsRebalanceData.Assignment assignmentUnequalWarmupTasks = new StreamsRebalanceData.Assignment(
             assignment.activeTasks(),
             assignment.standbyTasks(),
-            unequalWarmupTasks
+            unequalWarmupTasks,
+            assignment.isGroupReady()
+        );
+        final StreamsRebalanceData.Assignment assignmentUnequalIsGroupReady = new StreamsRebalanceData.Assignment(
+            assignment.activeTasks(),
+            assignment.standbyTasks(),
+            assignment.warmupTasks(),
+            !assignment.isGroupReady()
         );
 
         assertEquals(assignment, assignmentEqual);
         assertNotEquals(assignment, assignmentUnequalActiveTasks);
         assertNotEquals(assignment, assignmentUnequalStandbyTasks);
         assertNotEquals(assignment, assignmentUnequalWarmupTasks);
+        assertNotEquals(assignment, assignmentUnequalIsGroupReady);
         assertEquals(assignment.hashCode(), assignmentEqual.hashCode());
         assertNotEquals(assignment.hashCode(), assignmentUnequalActiveTasks.hashCode());
         assertNotEquals(assignment.hashCode(), assignmentUnequalStandbyTasks.hashCode());
         assertNotEquals(assignment.hashCode(), assignmentUnequalWarmupTasks.hashCode());
+        assertNotEquals(assignment.hashCode(), assignmentUnequalIsGroupReady.hashCode());
     }
 
     @Test
@@ -169,7 +183,8 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData.Assignment assignment = new StreamsRebalanceData.Assignment(
             Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 1)),
             Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 2)),
-            Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 3))
+            Set.of(new StreamsRebalanceData.TaskId("subtopologyId1", 3)),
+            true
         );
 
         final StreamsRebalanceData.Assignment copy = assignment.copy();
@@ -273,7 +288,7 @@ public class StreamsRebalanceDataTest {
     }
 
     @Test
-    public void streamsRebalanceDataShouldNotHaveModifiableSubtopologiesAndClientTags() {
+    public void streamsRebalanceDataShouldNotHaveModifiableSubtopologiesClientTags() {
         final UUID processId = UUID.randomUUID();
         final Optional<StreamsRebalanceData.HostInfo> endpoint = Optional.of(new StreamsRebalanceData.HostInfo("localhost", 9090));
         final Map<String, StreamsRebalanceData.Subtopology> subtopologies = new HashMap<>();
@@ -281,8 +296,10 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
             processId,
             endpoint,
+            Optional.empty(),
             subtopologies,
-            clientTags
+            clientTags,
+            Map::of
         );
 
         assertThrows(
@@ -312,8 +329,10 @@ public class StreamsRebalanceDataTest {
             () -> new StreamsRebalanceData(
                 null,
                 endpoint,
+                Optional.empty(),
                 subtopologies,
-                clientTags
+                clientTags,
+                Map::of
             )
         );
         assertEquals("Process ID cannot be null", exception.getMessage());
@@ -330,8 +349,10 @@ public class StreamsRebalanceDataTest {
             () -> new StreamsRebalanceData(
                 processId,
                 null,
+                Optional.empty(),
                 subtopologies,
-                clientTags
+                clientTags,
+                Map::of
             )
         );
         assertEquals("Endpoint cannot be null", exception.getMessage());
@@ -348,11 +369,34 @@ public class StreamsRebalanceDataTest {
             () -> new StreamsRebalanceData(
                 processId,
                 endpoint,
+                Optional.empty(),
                 null,
-                clientTags
+                clientTags,
+                Map::of
             )
         );
         assertEquals("Subtopologies cannot be null", exception.getMessage());
+    }
+
+    @Test
+    public void streamsRebalanceDataShouldNotAcceptNullRackId() {
+        final UUID processId = UUID.randomUUID();
+        final Optional<StreamsRebalanceData.HostInfo> endpoint = Optional.of(new StreamsRebalanceData.HostInfo("localhost", 9090));
+        final Map<String, StreamsRebalanceData.Subtopology> subtopologies = new HashMap<>();
+        final Map<String, String> clientTags = Map.of("clientTag1", "clientTagValue1");
+
+        final Exception exception = assertThrows(
+            NullPointerException.class,
+            () -> new StreamsRebalanceData(
+                processId,
+                endpoint,
+                null,
+                subtopologies,
+                clientTags,
+                Map::of
+            )
+        );
+        assertEquals("Rack ID cannot be null", exception.getMessage());
     }
 
     @Test
@@ -366,8 +410,10 @@ public class StreamsRebalanceDataTest {
             () -> new StreamsRebalanceData(
                 processId,
                 endpoint,
+                Optional.empty(),
                 subtopologies,
-                null
+                null,
+                Map::of
             )
         );
         assertEquals("Client tags cannot be null", exception.getMessage());
@@ -382,8 +428,10 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
             processId,
             endpoint,
+            Optional.empty(),
             subtopologies,
-            clientTags
+            clientTags,
+            Map::of
         );
 
         assertEquals(StreamsRebalanceData.Assignment.EMPTY, streamsRebalanceData.reconciledAssignment());
@@ -398,8 +446,10 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
             processId,
             endpoint,
+            Optional.empty(),
             subtopologies,
-            clientTags
+            clientTags,
+            Map::of
         );
 
         assertTrue(streamsRebalanceData.partitionsByHost().isEmpty());
@@ -414,8 +464,10 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
             processId,
             endpoint,
+            Optional.empty(),
             subtopologies,
-            clientTags
+            clientTags,
+            Map::of
         );
 
         assertFalse(streamsRebalanceData.shutdownRequested());
@@ -430,8 +482,10 @@ public class StreamsRebalanceDataTest {
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
             processId,
             endpoint,
+            Optional.empty(),
             subtopologies,
-            clientTags
+            clientTags,
+            Map::of
         );
 
         assertTrue(streamsRebalanceData.statuses().isEmpty());
@@ -446,10 +500,12 @@ public class StreamsRebalanceDataTest {
         final Map<String, String> clientTags = Map.of("clientTag1",
                 "clientTagValue1");
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
-                processId,
-                endpoint,
-                subtopologies,
-                clientTags
+            processId,
+            endpoint,
+            Optional.empty(),
+            subtopologies,
+            clientTags,
+            Map::of
         );
 
         assertEquals(-1, streamsRebalanceData.heartbeatIntervalMs());
@@ -464,10 +520,12 @@ public class StreamsRebalanceDataTest {
         final Map<String, String> clientTags = Map.of("clientTag1",
                 "clientTagValue1");
         final StreamsRebalanceData streamsRebalanceData = new StreamsRebalanceData(
-                processId,
-                endpoint,
-                subtopologies,
-                clientTags
+            processId,
+            endpoint,
+            Optional.empty(),
+            subtopologies,
+            clientTags,
+            Map::of
         );
 
         streamsRebalanceData.setHeartbeatIntervalMs(1000);

@@ -18,12 +18,13 @@
   "type": "request",
   "listeners": ["broker"],
   "name": "StreamsGroupHeartbeatRequest",
-  "validVersions": "0",
-  "flexibleVersions": "0+",
-  // The StreamsGroupHeartbeatRequest API is added as part of KIP-1071 and is still under
-  // development. Hence, the API is not exposed by default by brokers unless
-  // explicitly enabled.
+  // Version 1 is the same as version 0; bumped together with StreamsGroupHeartbeatResponse v1,
+  // which adds TopologyDescriptionRequired (KIP-1331). Required so the response v1 is negotiated.
+  // Marked unstable until the broker topology-description manager lands (KIP-1331); flip to false
+  // before release.
   "latestVersionUnstable": true,
+  "validVersions": "0-1",
+  "flexibleVersions": "0+",
   "fields": [
     { "name": "GroupId", "type": "string", "versions": "0+", "entityType": "groupId",
       "about": "The group identifier." },

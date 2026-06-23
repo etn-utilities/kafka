@@ -22,7 +22,7 @@ import kafka.utils.{TestInfoUtils, TestUtils}
 import kafka.utils.TestUtils.waitUntilTrue
 import org.apache.kafka.clients.admin.{Admin, AlterConfigOp, ListGroupsOptions, NewTopic}
 import org.apache.kafka.clients.consumer._
-import org.apache.kafka.clients.consumer.internals.{StreamsRebalanceData, StreamsRebalanceListener}
+import org.apache.kafka.clients.consumer.internals.{ShareAcquireMode, StreamsRebalanceData, StreamsRebalanceListener}
 import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.acl.AclOperation._
 import org.apache.kafka.common.acl.AclPermissionType.{ALLOW, DENY}
@@ -38,10 +38,10 @@ import org.apache.kafka.common.message.JoinGroupRequestData.JoinGroupRequestProt
 import org.apache.kafka.common.message.LeaveGroupRequestData.MemberIdentity
 import org.apache.kafka.common.message.ListOffsetsRequestData.{ListOffsetsPartition, ListOffsetsTopic}
 import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.{OffsetForLeaderPartition, OffsetForLeaderTopic, OffsetForLeaderTopicCollection}
-import org.apache.kafka.common.message.{AddOffsetsToTxnRequestData, AlterPartitionReassignmentsRequestData, AlterReplicaLogDirsRequestData, AlterShareGroupOffsetsRequestData, ConsumerGroupDescribeRequestData, ConsumerGroupHeartbeatRequestData, ConsumerGroupHeartbeatResponseData, CreateAclsRequestData, CreatePartitionsRequestData, CreateTopicsRequestData, DeleteAclsRequestData, DeleteGroupsRequestData, DeleteRecordsRequestData, DeleteShareGroupOffsetsRequestData, DeleteShareGroupStateRequestData, DeleteTopicsRequestData, DescribeClusterRequestData, DescribeConfigsRequestData, DescribeGroupsRequestData, DescribeLogDirsRequestData, DescribeProducersRequestData, DescribeShareGroupOffsetsRequestData, DescribeTransactionsRequestData, FetchResponseData, FindCoordinatorRequestData, HeartbeatRequestData, IncrementalAlterConfigsRequestData, InitializeShareGroupStateRequestData, JoinGroupRequestData, ListPartitionReassignmentsRequestData, ListTransactionsRequestData, MetadataRequestData, OffsetCommitRequestData, OffsetFetchRequestData, OffsetFetchResponseData, ProduceRequestData, ReadShareGroupStateRequestData, ReadShareGroupStateSummaryRequestData, ShareAcknowledgeRequestData, ShareFetchRequestData, ShareGroupDescribeRequestData, ShareGroupHeartbeatRequestData, StreamsGroupDescribeRequestData, StreamsGroupHeartbeatRequestData, StreamsGroupHeartbeatResponseData, SyncGroupRequestData, WriteShareGroupStateRequestData, WriteTxnMarkersRequestData}
+import org.apache.kafka.common.message.{AddOffsetsToTxnRequestData, AlterPartitionReassignmentsRequestData, AlterReplicaLogDirsRequestData, AlterShareGroupOffsetsRequestData, ConsumerGroupDescribeRequestData, ConsumerGroupHeartbeatRequestData, ConsumerGroupHeartbeatResponseData, CreateAclsRequestData, CreatePartitionsRequestData, CreateTopicsRequestData, DeleteAclsRequestData, DeleteGroupsRequestData, DeleteRecordsRequestData, DeleteShareGroupOffsetsRequestData, DeleteShareGroupStateRequestData, DeleteTopicsRequestData, DescribeClusterRequestData, DescribeConfigsRequestData, DescribeGroupsRequestData, DescribeLogDirsRequestData, DescribeProducersRequestData, DescribeShareGroupOffsetsRequestData, DescribeTransactionsRequestData, FetchResponseData, FindCoordinatorRequestData, HeartbeatRequestData, IncrementalAlterConfigsRequestData, InitializeShareGroupStateRequestData, JoinGroupRequestData, ListPartitionReassignmentsRequestData, ListTransactionsRequestData, MetadataRequestData, OffsetCommitRequestData, OffsetFetchRequestData, OffsetFetchResponseData, ProduceRequestData, ReadShareGroupStateRequestData, ReadShareGroupStateSummaryRequestData, ShareAcknowledgeRequestData, ShareFetchRequestData, ShareGroupDescribeRequestData, ShareGroupHeartbeatRequestData, StreamsGroupDescribeRequestData, StreamsGroupHeartbeatRequestData, StreamsGroupHeartbeatResponseData, StreamsGroupTopologyDescriptionUpdateRequestData, SyncGroupRequestData, WriteShareGroupStateRequestData, WriteTxnMarkersRequestData}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
-import org.apache.kafka.common.record.{MemoryRecords, RecordBatch, SimpleRecord}
+import org.apache.kafka.common.record.internal.{MemoryRecords, RecordBatch, SimpleRecord}
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.resource.PatternType.{LITERAL, PREFIXED}
 import org.apache.kafka.common.resource.ResourceType._
@@ -156,7 +156,10 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     ApiKeys.ADD_PARTITIONS_TO_TXN -> ((resp: AddPartitionsToTxnResponse) => resp.errors.get(AddPartitionsToTxnResponse.V3_AND_BELOW_TXN_ID).get(tp)),
     ApiKeys.ADD_OFFSETS_TO_TXN -> ((resp: AddOffsetsToTxnResponse) => Errors.forCode(resp.data.errorCode)),
     ApiKeys.END_TXN -> ((resp: EndTxnResponse) => resp.error),
-    ApiKeys.TXN_OFFSET_COMMIT -> ((resp: TxnOffsetCommitResponse) => resp.errors.get(tp)),
+    ApiKeys.TXN_OFFSET_COMMIT -> ((resp: TxnOffsetCommitResponse) => resp.data.topics.asScala
+      .find(_.name == tp.topic)
+      .flatMap(_.partitions.asScala.find(_.partitionIndex == tp.partition).map(p => Errors.forCode(p.errorCode)))
+      .orNull),
     ApiKeys.CREATE_ACLS -> ((resp: CreateAclsResponse) => Errors.forCode(resp.results.asScala.head.errorCode)),
     ApiKeys.DESCRIBE_ACLS -> ((resp: DescribeAclsResponse) => resp.error.error),
     ApiKeys.DELETE_ACLS -> ((resp: DeleteAclsResponse) => Errors.forCode(resp.filterResults.asScala.head.errorCode)),
@@ -229,7 +232,9 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
       resp.data.errorCode)),
     ApiKeys.STREAMS_GROUP_HEARTBEAT -> ((resp: StreamsGroupHeartbeatResponse) => Errors.forCode(resp.data.errorCode)),
     ApiKeys.STREAMS_GROUP_DESCRIBE -> ((resp: StreamsGroupDescribeResponse) =>
-      Errors.forCode(resp.data.groups.asScala.find(g => streamsGroup == g.groupId).head.errorCode))
+      Errors.forCode(resp.data.groups.asScala.find(g => streamsGroup == g.groupId).head.errorCode)),
+    ApiKeys.STREAMS_GROUP_TOPOLOGY_DESCRIPTION_UPDATE ->
+      ((resp: StreamsGroupTopologyDescriptionUpdateResponse) => Errors.forCode(resp.data.errorCode))
   )
 
   def findErrorForTopicId(id: Uuid, response: AbstractResponse): Errors = {
@@ -300,6 +305,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     ApiKeys.ALTER_SHARE_GROUP_OFFSETS -> (shareGroupReadAcl ++ topicReadAcl),
     ApiKeys.STREAMS_GROUP_HEARTBEAT -> (streamsGroupReadAcl ++ topicDescribeAcl),
     ApiKeys.STREAMS_GROUP_DESCRIBE -> (streamsGroupDescribeAcl ++ topicDescribeAcl),
+    ApiKeys.STREAMS_GROUP_TOPOLOGY_DESCRIPTION_UPDATE -> streamsGroupReadAcl,
   )
 
   private def createMetadataRequest(allowAutoTopicCreation: Boolean) = {
@@ -436,7 +442,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
       util.List.of(new JoinGroupRequestData.JoinGroupRequestProtocol()
         .setName(protocolName)
         .setMetadata("test".getBytes())
-    ).iterator())
+    ))
 
     new JoinGroupRequest.Builder(
       new JoinGroupRequestData()
@@ -628,7 +634,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
   }
 
   private def describeLogDirsRequest = new DescribeLogDirsRequest.Builder(new DescribeLogDirsRequestData().setTopics(new DescribeLogDirsRequestData.DescribableLogDirTopicCollection(util.Set.of(
-    new DescribeLogDirsRequestData.DescribableLogDirTopic().setTopic(tp.topic).setPartitions(util.List.of(tp.partition))).iterator()))).build()
+    new DescribeLogDirsRequestData.DescribableLogDirTopic().setTopic(tp.topic).setPartitions(util.List.of(tp.partition)))))).build()
 
   private def addPartitionsToTxnRequest = AddPartitionsToTxnRequest.Builder.forClient(transactionalId, 1, 1, util.List.of(tp)).build()
 
@@ -648,11 +654,11 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
 
   private def describeProducersRequest: DescribeProducersRequest = new DescribeProducersRequest.Builder(
     new DescribeProducersRequestData()
-      .setTopics(java.util.List.of(
+      .setTopics(new DescribeProducersRequestData.TopicRequestCollection(java.util.List.of(
         new DescribeProducersRequestData.TopicRequest()
           .setName(tp.topic)
           .setPartitionIndexes(java.util.List.of(Int.box(tp.partition)))
-      ))
+      )))
   ).build()
 
   private def describeTransactionsRequest: DescribeTransactionsRequest = new DescribeTransactionsRequest.Builder(
@@ -709,6 +715,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
   private def shareGroupHeartbeatRequest = new ShareGroupHeartbeatRequest.Builder(
     new ShareGroupHeartbeatRequestData()
       .setGroupId(shareGroup)
+      .setMemberId(Uuid.randomUuid().toString)
       .setMemberEpoch(0)
       .setSubscribedTopicNames(List(topic).asJava)).build(ApiKeys.SHARE_GROUP_HEARTBEAT.latestVersion)
 
@@ -724,7 +731,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     val send: Seq[TopicIdPartition] = Seq(
       new TopicIdPartition(getTopicIds().getOrElse(tp.topic, Uuid.ZERO_UUID), new TopicPartition(topic, part)))
     val ackMap = new util.HashMap[TopicIdPartition, util.List[ShareFetchRequestData.AcknowledgementBatch]]
-    requests.ShareFetchRequest.Builder.forConsumer(shareGroup, metadata, 100, 0, Int.MaxValue, 500, 500,
+    requests.ShareFetchRequest.Builder.forConsumer(shareGroup, metadata, 100, 0, Int.MaxValue, 500, 500, ShareAcquireMode.BATCH_OPTIMIZED.id(), false,
       send.asJava, Seq.empty.asJava, ackMap).build()
   }
 
@@ -879,6 +886,14 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     new StreamsGroupDescribeRequestData()
       .setGroupIds(List(streamsGroup).asJava)
       .setIncludeAuthorizedOperations(false)).build(ApiKeys.STREAMS_GROUP_DESCRIBE.latestVersion)
+
+  private def streamsGroupTopologyDescriptionUpdateRequest = new StreamsGroupTopologyDescriptionUpdateRequest.Builder(
+    new StreamsGroupTopologyDescriptionUpdateRequestData()
+      .setGroupId(streamsGroup)
+      .setMemberId(Uuid.randomUuid.toString)
+      .setTopologyEpoch(0)
+      .setTopologyDescription(new StreamsGroupTopologyDescriptionUpdateRequestData.TopologyDescription())
+  ).build(ApiKeys.STREAMS_GROUP_TOPOLOGY_DESCRIPTION_UPDATE.latestVersion)
   
   private def sendRequests(requestKeyToRequest: mutable.Map[ApiKeys, AbstractRequest], topicExists: Boolean = true,
                            topicNames: Map[Uuid, String] = getTopicNames()) = {
@@ -965,6 +980,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
       ApiKeys.ALTER_SHARE_GROUP_OFFSETS -> alterShareGroupOffsetsRequest,
       ApiKeys.STREAMS_GROUP_HEARTBEAT -> streamsGroupHeartbeatRequest,
       ApiKeys.STREAMS_GROUP_DESCRIBE -> streamsGroupDescribeRequest,
+      ApiKeys.STREAMS_GROUP_TOPOLOGY_DESCRIPTION_UPDATE -> streamsGroupTopologyDescriptionUpdateRequest,
 
       // Delete the topic last
       ApiKeys.DELETE_TOPICS -> deleteTopicsRequest
@@ -999,7 +1015,8 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
       ApiKeys.SHARE_ACKNOWLEDGE -> shareAcknowledgeRequest,
       ApiKeys.DESCRIBE_SHARE_GROUP_OFFSETS -> describeShareGroupOffsetsRequest,
       ApiKeys.STREAMS_GROUP_HEARTBEAT -> streamsGroupHeartbeatRequest,
-      ApiKeys.STREAMS_GROUP_DESCRIBE -> streamsGroupDescribeRequest
+      ApiKeys.STREAMS_GROUP_DESCRIBE -> streamsGroupDescribeRequest,
+      ApiKeys.STREAMS_GROUP_TOPOLOGY_DESCRIPTION_UPDATE -> streamsGroupTopologyDescriptionUpdateRequest
     )
 
     sendRequests(requestKeyToRequest, topicExists = false, topicNames)
@@ -1356,7 +1373,8 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     sendRecords(producer, 1, tp)
     removeAllClientAcls()
 
-    val consumer = createConsumer()
+    // Remove the group.id configuration since this self-assigning partitions.
+    val consumer = createConsumer(configsToRemove = List(ConsumerConfig.GROUP_ID_CONFIG)) 
     consumer.assign(java.util.List.of(tp))
     assertThrows(classOf[TopicAuthorizationException], () => consumeRecords(consumer))
   }
@@ -1667,7 +1685,19 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     addAndVerifyAcls(acls, resource)
 
     waitUntilTrue(() => {
-      consumer.poll(Duration.ofMillis(50L))
+      try {
+        consumer.poll(Duration.ofMillis(50L))
+      } catch {
+        // In AsyncKafkaConsumer the TOPIC_AUTHORIZATION_FAILED error from the 1st metadata
+        // response is queued by the background thread and only delivered to the app thread on
+        // the next poll(), so assertThrows returns one full poll-timeout (~50ms) later than
+        // in the fix before KAFKA-20426. By then most of the 100ms retry backoff (retry.backoff.ms)
+        // has already elapsed, and the 2nd metadata request can fire just milliseconds after
+        // addAndVerifyAcls returns — potentially before the CREATE ACL has been committed on
+        // the broker. That produces another TOPIC_AUTHORIZATION_FAILED which is delivered on
+        // the first poll() in waitUntilTrue. Swallow it so the loop keeps retrying.
+        case _: TopicAuthorizationException =>
+      }
       brokers.forall { broker =>
         OptionConverters.toScala(broker.metadataCache.getLeaderAndIsr(newTopic, 0)) match {
           case Some(partitionState) => FetchRequest.isValidBrokerId(partitionState.leader)
@@ -3121,8 +3151,10 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     addAndVerifyAcls(Set(allowAllOpsAcl), groupResource)
     addAndVerifyAcls(Set(allowAllOpsAcl), topicResource)
 
-    val response = sendAndReceiveFirstRegexHeartbeat(Uuid.randomUuid.toString, listenerName)
-    sendAndReceiveRegexHeartbeat(response, listenerName, Some(1))
+    var response = sendAndReceiveFirstRegexHeartbeat(Uuid.randomUuid.toString, listenerName)
+    TestUtils.tryUntilNoAssertionError() {
+      response = sendAndReceiveRegexHeartbeat(response, listenerName, Some(1))
+    }
   }
 
   @Test
@@ -3843,8 +3875,11 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     val response = sendRequestAndVerifyResponseError(request, resource, isAuthorized = true).asInstanceOf[StreamsGroupHeartbeatResponse]
     assertEquals(
       util.List.of(new StreamsGroupHeartbeatResponseData.Status()
+        .setStatusCode(StreamsGroupHeartbeatResponse.Status.ASSIGNMENT_DELAYED.code())
+        .setStatusDetail("Assignment delayed due to the configured initial rebalance delay."),
+        new StreamsGroupHeartbeatResponseData.Status()
         .setStatusCode(StreamsGroupHeartbeatResponse.Status.MISSING_INTERNAL_TOPICS.code())
-        .setStatusDetail("Internal topics are missing: [topic]; Unauthorized to CREATE on topics topic.")),
+        .setStatusDetail("Internal topics are missing: topic; Unauthorized to CREATE on topics topic.")),
     response.data().status())
   }
 
@@ -3874,8 +3909,11 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     // Request successful, and no internal topic creation error.
     assertEquals(
       util.List.of(new StreamsGroupHeartbeatResponseData.Status()
+        .setStatusCode(StreamsGroupHeartbeatResponse.Status.ASSIGNMENT_DELAYED.code())
+        .setStatusDetail("Assignment delayed due to the configured initial rebalance delay."),
+        new StreamsGroupHeartbeatResponseData.Status()
         .setStatusCode(StreamsGroupHeartbeatResponse.Status.MISSING_INTERNAL_TOPICS.code())
-        .setStatusDetail("Internal topics are missing: [topic]")),
+        .setStatusDetail("Internal topics are missing: topic")),
       response.data().status())
   }
 
@@ -3895,6 +3933,7 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
     val consumer = createStreamsConsumer(streamsRebalanceData = new StreamsRebalanceData(
       UUID.randomUUID(),
       Optional.empty(),
+      Optional.empty(),
       util.Map.of(
         "subtopology-0", new StreamsRebalanceData.Subtopology(
           if (topicAsSourceTopic) util.Set.of(sourceTopic, topic) else util.Set.of(sourceTopic),
@@ -3907,7 +3946,8 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
           else util.Map.of(),
           util.Set.of()
         )),
-      Map.empty[String, String].asJava
+      Map.empty[String, String].asJava,
+      () => util.Map.of[StreamsRebalanceData.TaskId, java.lang.Long]()
     ))
     consumer.subscribe(
       if (topicAsSourceTopic || topicAsRepartitionSourceTopic) util.Set.of(sourceTopic, topic) else util.Set.of(sourceTopic),
@@ -4166,11 +4206,11 @@ class AuthorizerIntegrationTest extends AbstractAuthorizerIntegrationTest {
   }
 
   def removeAllClientAcls(): Unit = {
-    val authorizerForWrite = TestUtils.pickAuthorizerForWrite(brokers, controllerServers)
+    val authorizerForWrite = pickAuthorizerForWrite(brokers, controllerServers)
     val aclEntryFilter = new AccessControlEntryFilter(clientPrincipalString, null, AclOperation.ANY, AclPermissionType.ANY)
     val aclFilter = new AclBindingFilter(ResourcePatternFilter.ANY, aclEntryFilter)
 
-    authorizerForWrite.deleteAcls(TestUtils.anonymousAuthorizableContext, java.util.List.of(aclFilter)).asScala.
+    authorizerForWrite.deleteAcls(anonymousAuthorizableContext, java.util.List.of(aclFilter)).asScala.
       map(_.toCompletableFuture.get).flatMap { deletion =>
         deletion.aclBindingDeleteResults().asScala.map(_.aclBinding.pattern).toSet
       }.foreach { resource =>

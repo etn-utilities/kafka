@@ -42,8 +42,8 @@ import org.apache.kafka.common.protocol.ApiMessage;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.ConsumerGroupDescribeResponse;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -266,6 +266,7 @@ public class DescribeConsumerGroupsHandlerTest {
         assertCompleted(result, expected);
     }
 
+    @SuppressWarnings({"deprecation", "removal"})
     @Test
     public void testSuccessfulHandleClassicGroupResponse() {
         Collection<MemberDescription> members = singletonList(new MemberDescription(
@@ -346,7 +347,7 @@ public class DescribeConsumerGroupsHandlerTest {
                             new DescribedGroup()
                                 .setErrorCode(error.code())
                                 .setGroupId(groupId1)
-                                .setGroupState(ConsumerGroupState.STABLE.toString())
+                                .setGroupState(GroupState.STABLE.toString())
                                 .setProtocolType(protocolType)
                                 .setProtocolData("assignor")
                                 .setAuthorizedOperations(Utils.to32BitField(emptySet()))

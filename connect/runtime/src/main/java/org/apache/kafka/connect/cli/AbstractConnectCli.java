@@ -16,9 +16,9 @@
  */
 package org.apache.kafka.connect.cli;
 
-import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.internals.Exit;
 import org.apache.kafka.connect.connector.policy.ConnectorClientConfigOverridePolicy;
 import org.apache.kafka.connect.runtime.Connect;
 import org.apache.kafka.connect.runtime.Herder;
@@ -114,15 +114,17 @@ public abstract class AbstractConnectCli<H extends Herder, T extends WorkerConfi
         log.info("Kafka Connect worker initializing ...");
         long initStart = time.hiResClockMs();
 
-        T config = createConfig(workerProps);
-        log.debug("Kafka cluster ID: {}", config.kafkaClusterId());
-
         WorkerInfo initInfo = new WorkerInfo();
         initInfo.logAll();
 
         log.info("Scanning for plugin classes. This might take a moment ...");
         Plugins plugins = new Plugins(workerProps);
         plugins.compareAndSwapWithDelegatingLoader();
+
+        // must call createConfig after plugins.compareAndSwapWithDelegatingLoader()
+        // because WorkerConfig may instantiate classes only available on plugin.path.
+        T config = createConfig(workerProps);
+        log.debug("Kafka cluster ID: {}", config.kafkaClusterId());
 
         RestClient restClient = new RestClient(config);
 

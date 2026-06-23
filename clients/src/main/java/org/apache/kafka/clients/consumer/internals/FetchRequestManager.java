@@ -25,8 +25,8 @@ import org.apache.kafka.clients.consumer.internals.NetworkClientDelegate.UnsentR
 import org.apache.kafka.clients.consumer.internals.events.CreateFetchRequestsEvent;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.requests.FetchRequest;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 import java.util.List;
 import java.util.Map;
@@ -144,6 +144,14 @@ public class FetchRequestManager extends AbstractFetch implements RequestManager
 
         try {
             Map<Node, FetchSessionHandler.FetchRequestData> fetchRequests = fetchRequestPreparer.prepare();
+
+            if (fetchRequests.isEmpty()) {
+                // If there's nothing to fetch, wake up the FetchBuffer so it doesn't needlessly wait for a wakeup
+                // that won't come until the data in the fetch buffer is consumed.
+                fetchBuffer.wakeup();
+                pendingFetchRequestFuture.complete(null);
+                return PollResult.EMPTY;
+            }
 
             List<UnsentRequest> requests = fetchRequests.entrySet().stream().map(entry -> {
                 final Node fetchTarget = entry.getKey();

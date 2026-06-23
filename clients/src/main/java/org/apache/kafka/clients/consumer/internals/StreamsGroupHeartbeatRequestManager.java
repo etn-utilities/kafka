@@ -18,6 +18,7 @@ package org.apache.kafka.clients.consumer.internals;
 
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.internals.events.AsyncPollEvent;
 import org.apache.kafka.clients.consumer.internals.events.BackgroundEventHandler;
 import org.apache.kafka.clients.consumer.internals.events.ErrorEvent;
 import org.apache.kafka.clients.consumer.internals.metrics.HeartbeatMetricsManager;
@@ -31,9 +32,9 @@ import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.StreamsGroupHeartbeatRequest;
 import org.apache.kafka.common.requests.StreamsGroupHeartbeatResponse;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Timer;
+import org.apache.kafka.common.utils.internals.LogContext;
 
 import org.slf4j.Logger;
 
@@ -49,7 +50,9 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.kafka.clients.consumer.CloseOptions.GroupMembershipOperation.REMAIN_IN_GROUP;
 import static org.apache.kafka.clients.consumer.internals.NetworkClientDelegate.PollResult.EMPTY;
+import static org.apache.kafka.clients.consumer.internals.RequestState.RETRY_BACKOFF_JITTER;
 
 /**
  * <p>Manages the request creation and response handling for the streams group heartbeat. The class creates a
@@ -134,6 +137,7 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
                         .setPort(userEndpoint.port())
                     );
                 });
+                streamsRebalanceData.rackId().ifPresent(data::setRackId);
                 data.setClientTags(streamsRebalanceData.clientTags().entrySet().stream()
                     .map(entry -> new StreamsGroupHeartbeatRequestData.KeyValue()
                         .setKey(entry.getKey())
@@ -330,7 +334,7 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
             0,
             retryBackoffMs,
             retryBackoffMaxMs,
-            maxPollIntervalMs
+            RETRY_BACKOFF_JITTER
         );
         this.pollTimer = time.timer(maxPollIntervalMs);
     }
@@ -381,6 +385,13 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
             heartbeatState.reset();
             return new NetworkClientDelegate.PollResult(heartbeatRequestState.heartbeatIntervalMs(), Collections.singletonList(leaveHeartbeat));
         }
+        if (membershipManager.state() == MemberState.LEAVING && shouldSkipLeaveHeartbeat()) {
+            logger.info("Dynamic member {} skipping leave heartbeat (operation=REMAIN_IN_GROUP). " +
+                "The broker will remove the member from the group via session timeout.",
+                membershipManager.memberId());
+            membershipManager.onHeartbeatRequestSkipped();
+            return EMPTY;
+        }
         if (shouldHeartbeatBeforeIntervalExpires() || heartbeatRequestState.canSendRequest(currentTimeMs)) {
             NetworkClientDelegate.UnsentRequest request = makeHeartbeatRequestAndHandleResponse(currentTimeMs);
             return new NetworkClientDelegate.PollResult(heartbeatRequestState.heartbeatIntervalMs(), Collections.singletonList(request));
@@ -408,7 +419,7 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
      */
     @Override
     public NetworkClientDelegate.PollResult pollOnClose(long currentTimeMs) {
-        if (membershipManager.isLeavingGroup()) {
+        if (membershipManager.isLeavingGroup() && !shouldSkipLeaveHeartbeat()) {
             NetworkClientDelegate.UnsentRequest request = makeHeartbeatRequestAndLogResponse(currentTimeMs);
             return new NetworkClientDelegate.PollResult(heartbeatRequestState.heartbeatIntervalMs(), List.of(request));
         }
@@ -425,7 +436,7 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
      * are sent, so blocking for longer than the heartbeat interval might mean the application thread is not
      * responsive to changes.
      *
-     * <p>Similarly, we may have to unblock the application thread to send a `PollApplicationEvent` to make sure
+     * <p>Similarly, we may have to unblock the application thread to send a {@link AsyncPollEvent} to make sure
      * our poll timer will not expire while we are polling.
      *
      * <p>In the event that heartbeats are currently being skipped, this still returns the next heartbeat
@@ -455,7 +466,7 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
 
     /**
      * A heartbeat should be sent without waiting for the heartbeat interval to expire if:
-     * - the member is leaving the group
+     * - the member should send a leave heartbeat (see {@link #shouldSendLeaveHeartbeat()})
      * or
      * - the member is joining the group or acknowledging the assignment and for both cases there is no heartbeat request
      *   in flight.
@@ -463,10 +474,39 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
      * @return true if a heartbeat should be sent before the interval expires, false otherwise
      */
     private boolean shouldHeartbeatBeforeIntervalExpires() {
-        return membershipManager.state() == MemberState.LEAVING
-            ||
-            (membershipManager.state() == MemberState.JOINING || membershipManager.state() == MemberState.ACKNOWLEDGING)
+        return shouldSendLeaveHeartbeat()
+            || (membershipManager.state() == MemberState.JOINING || membershipManager.state() == MemberState.ACKNOWLEDGING)
                 && !heartbeatRequestState.requestInFlight();
+    }
+
+    /**
+     * Returns whether a leave group heartbeat should be sent. The leave heartbeat is skipped only
+     * when the member is dynamic (no group instance ID) and the operation is
+     * {@link org.apache.kafka.clients.consumer.CloseOptions.GroupMembershipOperation#REMAIN_IN_GROUP}.
+     * Static members always send the leave heartbeat (with epoch -2) so the broker holds the
+     * assignment until the session timeout.
+     *
+     * @return true if a leave heartbeat should be sent, false otherwise
+     */
+    private boolean shouldSendLeaveHeartbeat() {
+        if (shouldSkipLeaveHeartbeat()) {
+            logger.debug("Member {} skipping leave heartbeat (operation={}, static={}).",
+                membershipManager.memberId(),
+                membershipManager.leaveGroupOperation(),
+                membershipManager.groupInstanceId().isPresent());
+            return false;
+        }
+        return membershipManager.state() == MemberState.LEAVING;
+    }
+
+    /**
+     * Returns true if the leave heartbeat should be skipped: only when the member is dynamic
+     * (no group instance ID) and the operation is REMAIN_IN_GROUP. Static members always send
+     * a leave heartbeat (with epoch -2) so the broker can hold the assignment.
+     */
+    private boolean shouldSkipLeaveHeartbeat() {
+        return REMAIN_IN_GROUP == membershipManager.leaveGroupOperation()
+            && membershipManager.groupInstanceId().isEmpty();
     }
 
     private void maybePropagateCoordinatorFatalErrorEvent() {
@@ -504,7 +544,7 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
 
     private NetworkClientDelegate.UnsentRequest makeHeartbeatRequest(final long currentTimeMs) {
         NetworkClientDelegate.UnsentRequest request = new NetworkClientDelegate.UnsentRequest(
-            new StreamsGroupHeartbeatRequest.Builder(this.heartbeatState.buildRequestData(), true),
+            new StreamsGroupHeartbeatRequest.Builder(this.heartbeatState.buildRequestData()),
             coordinatorRequestManager.coordinator()
         );
         heartbeatRequestState.onSendAttempt(currentTimeMs);
@@ -528,6 +568,8 @@ public class StreamsGroupHeartbeatRequestManager implements RequestManager {
         heartbeatRequestState.onSuccessfulAttempt(currentTimeMs);
         heartbeatState.setEndpointInformationEpoch(data.endpointInformationEpoch());
         streamsRebalanceData.setHeartbeatIntervalMs(data.heartbeatIntervalMs());
+        streamsRebalanceData.setTaskOffsetIntervalMs(data.taskOffsetIntervalMs());
+        streamsRebalanceData.setAcceptableRecoveryLag(data.acceptableRecoveryLag());
 
         if (data.partitionsByUserEndpoint() != null) {
             streamsRebalanceData.setPartitionsByHost(convertHostInfoMap(data));

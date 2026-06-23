@@ -24,7 +24,7 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.common.utils.internals.LogContext;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.processor.Cancellable;
 import org.apache.kafka.streams.processor.PunctuationType;
@@ -44,6 +44,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Properties;
 
 import static org.apache.kafka.test.StreamsTestUtils.getStreamsConfig;
@@ -222,6 +223,14 @@ public class AbstractProcessorContextTest {
         }
 
         @Override
+        public Cancellable schedule(final Instant startTime,
+                                    final Duration interval,
+                                    final PunctuationType type,
+                                    final Punctuator callback) {
+            return null;
+        }
+
+        @Override
         public <K, V> void forward(final Record<K, V> record) {}
 
         @Override
@@ -246,6 +255,7 @@ public class AbstractProcessorContextTest {
                               final Bytes key,
                               final byte[] value,
                               final long timestamp,
+                              final Headers headers,
                               final Position position) {
         }
 
