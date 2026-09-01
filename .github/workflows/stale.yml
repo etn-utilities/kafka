@@ -15,8 +15,8 @@
 
 name: Stale PRs
 on:
-  schedule:
-    - cron: '30 3 * * *'    # Run at 3:30 UTC nightly
+  # schedule:
+    # - cron: '30 3 * * *'    # Run at 3:30 UTC nightly
   workflow_dispatch:
     inputs:
       dryRun:

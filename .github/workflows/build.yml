@@ -19,16 +19,17 @@ name: Check and Test
 # the "pull_request" event type. We should never dispatch this workflow from
 # a "pull_request_target" event.
 on:
-  workflow_call:
-    inputs:
-      is-trunk:
-        description: "Is this a trunk build?"
-        default: true
-        type: boolean
-      is-public-fork:
-        description: "Is this CI run from a public fork?"
-        default: true
-        type: boolean
+  workflow_dispatch:
+  # workflow_call:
+    # inputs:
+      # is-trunk:
+        # description: "Is this a trunk build?"
+        # default: true
+        # type: boolean
+      # is-public-fork:
+        # description: "Is this CI run from a public fork?"
+        # default: true
+        # type: boolean
 
 jobs:
   configure:

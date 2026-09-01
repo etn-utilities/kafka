@@ -16,10 +16,11 @@
 name: CI Complete
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types:
-      - completed
+  workflow_dispatch:
+  # workflow_run:
+    # workflows: [CI]
+    # types:
+      # - completed
 
 run-name: Build Scans for ${{ github.event.workflow_run.display_title}}
 

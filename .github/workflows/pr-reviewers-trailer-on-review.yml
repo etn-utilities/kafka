@@ -27,10 +27,11 @@
 name: Reviewers Trailer (on review)
 
 on:
-  workflow_run:
-    workflows: [Pull Request Reviewed]
-    types:
-      - requested
+  workflow_dispatch:
+  # workflow_run:
+    # workflows: [Pull Request Reviewed]
+    # types:
+      # - requested
 
 run-name: Reviewers Trailer for ${{ github.event.workflow_run.display_title }}
 
