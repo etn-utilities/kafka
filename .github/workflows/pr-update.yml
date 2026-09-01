@@ -15,6 +15,7 @@
 
 name: Pull Request
 on:
+  workflow_dispatch:
   # CAUTION! The pull_request_target is generally consider UNSAFE. This is because it will
   # run untrusted code on the GHA infra with access to secrets and elevated permissions. We must
   # not run any code from the pull request here. Instead, this workflow is for things like adding
@@ -23,10 +24,10 @@ on:
   # Read:
   # * https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#pull_request_target
   # * https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
-  pull_request_target:
-    types: [opened, reopened, synchronize]
-    branches:
-      - trunk
+  # pull_request_target:
+    # types: [opened, reopened, synchronize]
+    # branches:
+      # - trunk
 
 jobs:
   add-labeler-labels:

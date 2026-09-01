@@ -16,10 +16,11 @@
 name: Pull Request Linter
 
 on:
-  workflow_run:
-    workflows: [ Pull Request Reviewed ]
-    types:
-      - completed
+  workflow_dispatch:
+  # workflow_run:
+    # workflows: [ Pull Request Reviewed ]
+    # types:
+      # - completed
 
 jobs:
   lint-pr:

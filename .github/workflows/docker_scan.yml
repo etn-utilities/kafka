@@ -15,9 +15,9 @@
 
 name: Docker Image CVE Scanner
 on:
-  schedule:
+  # schedule:
     # This job will run at 3:30 UTC daily
-    - cron: '30 3 * * *'
+    # - cron: '30 3 * * *'
   workflow_dispatch:
 jobs:
   scan_jvm:

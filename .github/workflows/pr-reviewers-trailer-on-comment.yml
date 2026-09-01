@@ -24,8 +24,9 @@
 name: Reviewers Trailer (on comment)
 
 on:
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
+  # issue_comment:
+    # types: [created]
 
 permissions:
   contents: read
